@@ -15,6 +15,8 @@
           v-for="(annotation, index) in annotations"
           :key="index"
           class="annotation-item"
+          :class="{ active: selectedIndex === index }"
+          @click="onSelectItem(index)"
         >
           <div class="annotation-type">{{ getAnnotationTypeName(annotation.type) }}</div>
           <div class="annotation-details">
@@ -31,11 +33,13 @@
               标签: {{ annotation.value.keypointlabels.join(', ') }}<br>
               位置: x={{ annotation.value.x }}%, y={{ annotation.value.y }}%
             </div>
-            <div v-else-if="annotation.type === 'bbox'">
+            <div v-else-if="annotation.type === 'bbox' || annotation.type === 'bounding_box' || annotation.type === 'obb'">
+              类型: {{ getBoxTypeLabel(annotation) }}<br>
               标签: {{ annotation.label }}<br>
-              置信度: {{ (annotation.confidence * 100).toFixed(2) }}%<br>
-              位置: x={{ annotation.bbox.x.toFixed(2) }}%, y={{ annotation.bbox.y.toFixed(2) }}%<br>
-              尺寸: {{ annotation.bbox.width.toFixed(2) }}% × {{ annotation.bbox.height.toFixed(2) }}%
+              <template v-if="annotation.confidence != null">置信度: {{ (annotation.confidence * 100).toFixed(2) }}%<br></template>
+              位置: x={{ (annotation.bbox?.x ?? 0).toFixed(2) }}%, y={{ (annotation.bbox?.y ?? 0).toFixed(2) }}%<br>
+              尺寸: {{ (annotation.bbox?.width ?? 0).toFixed(2) }}% × {{ (annotation.bbox?.height ?? 0).toFixed(2) }}%
+              <template v-if="shouldShowAngle(annotation)"><br>旋转: {{ formatAngle(annotation.bbox?.angle) }}°</template>
             </div>
             <div v-else-if="annotation.type === 'polygon'">
               标签: {{ annotation.label }}<br>
@@ -65,8 +69,19 @@ const props = defineProps({
   initialVisible: {
     type: Boolean,
     default: true
+  },
+  /** 当前选中的标注索引（与画布高亮联动） */
+  selectedIndex: {
+    type: Number,
+    default: -1
   }
 });
+
+const emit = defineEmits(['toggle', 'select']);
+
+const onSelectItem = (index) => {
+  emit('select', index);
+};
 
 const visible = ref(props.initialVisible);
 
@@ -74,17 +89,38 @@ const toggleVisibility = () => {
   visible.value = !visible.value;
 };
 
-// 标注类型名称映射
+// 标注类型名称映射（列表标题用）
 const getAnnotationTypeName = (type) => {
   const typeNames = {
     'rectanglelabels': '边界框',
     'polygonlabels': '多边形',
     'keypointlabels': '关键点',
     'bbox': '目标检测',
+    'bounding_box': '矩形框',
+    'obb': '旋转框(OBB)',
     'polygon': '图像分割',
     'classification': '图像分类'
   };
   return typeNames[type] || type;
+};
+
+// 详情中显示的框类型（矩形框 / 旋转框(OBB)）
+const getBoxTypeLabel = (annotation) => {
+  if (annotation.type === 'obb') return '旋转框(OBB)';
+  if (annotation.type === 'bounding_box' || annotation.type === 'bbox') return '矩形框';
+  return getAnnotationTypeName(annotation.type);
+};
+
+// OBB 或存在角度时显示旋转角；OBB 始终显示（含 0°）
+const shouldShowAngle = (annotation) => {
+  if (!annotation.bbox) return false;
+  if (annotation.type === 'obb') return true;
+  return annotation.bbox.angle != null && annotation.bbox.angle !== 0;
+};
+
+const formatAngle = (rad) => {
+  if (rad == null) return '0';
+  return ((rad * 180) / Math.PI).toFixed(1);
 };
 </script>
 
@@ -116,14 +152,17 @@ const getAnnotationTypeName = (type) => {
 }
 
 .annotations-list {
-  max-height: 300px;
+  max-height: min(40vh, 300px);
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 10px;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .annotation-items {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 15.625rem), 1fr));
   gap: 10px;
 }
 
@@ -132,6 +171,16 @@ const getAnnotationTypeName = (type) => {
   border-radius: 4px;
   padding: 10px;
   background-color: #fff;
+  cursor: pointer;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+.annotation-item:hover {
+  border-color: #c0c4cc;
+  background-color: #fafafa;
+}
+.annotation-item.active {
+  border-color: #409eff;
+  background-color: #ecf5ff;
 }
 
 .annotation-type {

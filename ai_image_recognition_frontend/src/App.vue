@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <el-container style="height: 100vh;">
     <el-aside :width="isCollapse ? '64px' : '200px'" class="sidebar-container">
       <div class="logo-container">
@@ -38,7 +38,11 @@
       </div>
     </el-aside>
     <el-main class="main-content">
-      <router-view></router-view>
+      <router-view v-slot="{ Component }">
+        <keep-alive :include="['ImageAnnotation']">
+          <component :is="Component" />
+        </keep-alive>
+      </router-view>
     </el-main>
   </el-container>
 </template>

@@ -1,7 +1,14 @@
 <template>
   <div class="image-gallery">
     <div class="gallery-header">
-      <h3>已上传的图片 ({{ images.length }}张)</h3>
+      <div class="gallery-title-row">
+        <h3>已上传的图片 · 共 {{ images.length }} 张，已标注 {{ annotatedCount }} 张</h3>
+        <el-select v-model="filterOption" placeholder="筛选" size="small" style="width: 100px;" @change="emitFilter">
+          <el-option label="全部" value="all"></el-option>
+          <el-option label="已标注" value="annotated"></el-option>
+          <el-option label="未标注" value="unannotated"></el-option>
+        </el-select>
+      </div>
       <div class="selection-controls" v-if="images.length > 0">
         <el-checkbox v-model="selectAll" @change="handleSelectAll">全选</el-checkbox>
         <el-button 
@@ -40,27 +47,31 @@
     </div>
     <div class="images-grid">
       <div 
-        v-for="(image, index) in images" 
-        :key="index"
+        v-for="item in displayedItems" 
+        :key="item.index"
         class="image-item"
-        :class="{ active: currentIndex === index, selected: selectedImages.includes(index) }"
-        @click="selectImage(index, $event)"
+        :class="{ active: currentIndex === item.index, selected: selectedImages.includes(item.index) }"
+        @click="selectImage(item.index, $event)"
       >
         <div class="checkbox-wrapper" @click.stop>
-          <el-checkbox v-model="image.selected" @change="updateSelection(index)"></el-checkbox>
+          <el-checkbox v-model="item.image.selected" @change="updateSelection(item.index)"></el-checkbox>
         </div>
-        <img :src="image.url" :alt="image.name" />
+        <img :src="item.image.url" :alt="item.image.name" />
         <div class="image-overlay">
-          <span class="image-name">{{ image.name }}</span>
+          <span class="image-name">{{ item.image.name }}</span>
           <el-button 
             type="danger" 
             size="small" 
             circle 
-            @click.stop="removeImage(index)"
+            @click.stop="removeImage(item.index)"
             class="remove-btn"
           >
             <el-icon><Close /></el-icon>
           </el-button>
+        </div>
+        <div class="annotation-badge" v-if="getStats(item.index).count > 0">
+          <span class="badge-count">{{ getStats(item.index).count }}个框</span>
+          <span class="badge-saved" v-if="getStats(item.index).saved">已保存</span>
         </div>
       </div>
     </div>
@@ -79,62 +90,94 @@ const props = defineProps({
   currentIndex: {
     type: Number,
     default: -1
+  },
+  /** 每张图的标注数量与是否已保存，与 images 索引对应 */
+  annotationStats: {
+    type: Array,
+    default: () => []
+  },
+  /** 筛选：all / annotated / unannotated */
+  filterOption: {
+    type: String,
+    default: 'all'
   }
 });
 
-const emit = defineEmits(['select', 'remove', 'batchAnnotate', 'batchExport', 'batchClearAnnotations', 'batchDelete']);
+const emit = defineEmits(['select', 'remove', 'batchAnnotate', 'batchExport', 'batchClearAnnotations', 'batchDelete', 'update:filterOption']);
+
+const filterOption = ref(props.filterOption);
+watch(() => props.filterOption, (v) => { filterOption.value = v; });
+
+function getStats(index) {
+  const s = props.annotationStats[index];
+  return s ? { count: s.count || 0, saved: !!s.saved } : { count: 0, saved: false };
+}
+
+const annotatedCount = computed(() => {
+  return (props.annotationStats || []).filter(s => s && (s.count || 0) > 0).length;
+});
+
+const displayedIndices = computed(() => {
+  const stats = props.annotationStats;
+  const filter = filterOption.value;
+  if (filter === 'all') return props.images.map((_, i) => i);
+  return props.images
+    .map((_, i) => i)
+    .filter(i => {
+      const count = (stats[i] && stats[i].count) || 0;
+      if (filter === 'annotated') return count > 0;
+      if (filter === 'unannotated') return count === 0;
+      return true;
+    });
+});
+
+const displayedItems = computed(() =>
+  displayedIndices.value.map(index => ({ index, image: props.images[index] }))
+);
+
+function emitFilter() {
+  emit('update:filterOption', filterOption.value);
+}
 
 // 多选相关状态
 const selectedImages = ref([]);
 const selectAll = ref(false);
 
-// 监听images变化，初始化selected属性
 watch(() => props.images, (newImages) => {
   newImages.forEach(image => {
-    if (image.selected === undefined) {
-      image.selected = false;
-    }
+    if (image.selected === undefined) image.selected = false;
   });
 }, { immediate: true, deep: true });
 
-// 全选/取消全选
 const handleSelectAll = (val) => {
-  props.images.forEach((image, index) => {
-    image.selected = val;
+  displayedItems.value.forEach(({ index }) => {
+    props.images[index].selected = val;
   });
   updateSelectedImages();
 };
 
-// 更新选中状态
 const updateSelection = (index) => {
   updateSelectedImages();
-  // 检查是否所有图片都被选中
-  selectAll.value = props.images.length > 0 && props.images.every(img => img.selected);
+  selectAll.value = displayedItems.value.length > 0 && displayedItems.value.every(item => props.images[item.index].selected);
 };
 
-// 更新选中的图片索引数组
 const updateSelectedImages = () => {
   selectedImages.value = props.images
     .map((image, index) => image.selected ? index : -1)
     .filter(index => index !== -1);
 };
 
-// 选择图片
 const selectImage = (index, event) => {
-  // 如果按住Ctrl键，则切换选中状态
   if (event && event.ctrlKey) {
     props.images[index].selected = !props.images[index].selected;
     updateSelection(index);
   } else {
-    // 否则正常选择图片
     emit('select', index);
   }
 };
 
-// 移除图片
 const removeImage = (index) => {
   emit('remove', index);
-  // 更新选中状态
   updateSelectedImages();
 };
 
@@ -260,5 +303,38 @@ defineExpose({
   padding: 2px;
   height: 20px;
   width: 20px;
+}
+
+.gallery-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.annotation-badge {
+  position: absolute;
+  top: 28px;
+  right: 5px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.badge-count {
+  background: rgba(103, 194, 58, 0.95);
+  color: #fff;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.badge-saved {
+  background: rgba(64, 158, 255, 0.95);
+  color: #fff;
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 3px;
 }
 </style>

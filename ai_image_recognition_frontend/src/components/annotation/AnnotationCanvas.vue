@@ -1,47 +1,58 @@
 <template>
   <div class="annotation-canvas-container">
-    <div class="image-wrapper" style="position: relative;">
-      <img 
-        :src="imageUrl" 
-        :alt="imageName" 
-        class="display-image"
-        @load="onImageLoad"
-        ref="displayImage"
-        id="displayImage"
-        style="display: block; max-width: 100%;"
-      />
-      <canvas 
-        class="annotation-canvas"
-        ref="annotationCanvas"
-        id="annotationCanvas"
-        @mousedown="handleCanvasMouseDown"
-        @mousemove="handleCanvasMouseMove"
-        @mouseup="handleCanvasMouseUp"
-        @mouseleave="handleCanvasMouseLeave"
-        @mouseenter="handleCanvasMouseEnter"
-        @contextmenu.prevent
-        @contextmenu="handleContextMenu"
-      ></canvas>
-      
-      <!-- 标注提示信息 -->
-      <div class="annotation-hint" v-if="imageLoaded">
-        <template v-if="selectedTool === 'object_detection'">
-          目标检测: 左键拖拽绘制边界框，点击边界框拖拽移动，拖动四角调整大小，右键删除标注
-        </template>
-        <template v-else-if="selectedTool === 'object_detection_obb'">
-          旋转框(OBB): 左键拖拽绘制框，点击边界框拖拽移动，拖动四角调整大小，拖动顶部旋转控制点旋转，右键删除标注
-        </template>
-        <template v-else-if="selectedTool === 'image_segmentation'">
-          图像分割: 左键点击添加多边形顶点，点击第一个顶点闭合，右键删除标注
-        </template>
-      </div>
-      
-      <!-- 标签编辑弹出框 -->
-      <div 
-        v-if="isEditingLabel"
-        class="label-editor"
-        :style="{ left: labelPosition.x + 'px', top: labelPosition.y + 'px' }"
+    <!-- 缩放平移视口 -->
+    <div
+      class="canvas-zoom-pan-wrapper"
+      ref="zoomPanWrapperRef"
+      @wheel="handleWheel"
+    >
+      <div
+        class="canvas-zoom-pan-inner"
+        :style="zoomPanInnerStyle"
+        ref="zoomPanInnerRef"
       >
+        <div class="image-wrapper" style="position: relative;">
+          <img 
+            :src="imageUrl" 
+            :alt="imageName" 
+            class="display-image"
+            @load="onImageLoad"
+            ref="displayImage"
+            id="displayImage"
+            style="display: block; max-width: 100%;"
+          />
+          <canvas 
+            class="annotation-canvas"
+            ref="annotationCanvas"
+            id="annotationCanvas"
+            @mousedown="handleCanvasMouseDown"
+            @mousemove="handleCanvasMouseMove"
+            @mouseup="handleCanvasMouseUp"
+            @mouseleave="handleCanvasMouseLeave"
+            @mouseenter="handleCanvasMouseEnter"
+            @contextmenu.prevent
+            @contextmenu="handleContextMenu"
+          ></canvas>
+          
+          <!-- 标注提示信息 -->
+          <div class="annotation-hint" v-if="imageLoaded">
+            <template v-if="selectedTool === 'object_detection'">
+              目标检测: 左键拖拽绘制边界框，点击边界框拖拽移动，拖动四角调整大小，右键删除标注
+            </template>
+            <template v-else-if="selectedTool === 'object_detection_obb'">
+              旋转框(OBB): 左键拖拽绘制框，点击边界框拖拽移动，拖动四角调整大小，拖动顶部旋转控制点旋转，右键删除标注
+            </template>
+            <template v-else-if="selectedTool === 'image_segmentation'">
+              图像分割: 左键点击添加多边形顶点，点击第一个顶点闭合，右键删除标注
+            </template>
+          </div>
+          
+          <!-- 标签编辑弹出框 -->
+          <div 
+            v-if="isEditingLabel"
+            class="label-editor"
+            :style="{ left: labelPosition.x + 'px', top: labelPosition.y + 'px' }"
+          >
         <el-select 
           v-model="editingLabel"
           placeholder="选择类别"
@@ -85,14 +96,26 @@
           ></el-option>
         </el-select>
       </div>
+        </div>
+      </div>
+    </div>
+    <!-- 画布缩放控制 -->
+    <div class="zoom-controls" v-if="imageLoaded" title="Ctrl+滚轮可缩放画布">
+      <span class="zoom-controls-label">画布缩放</span>
+      <el-button size="small" circle @click="zoomOut" :disabled="zoomLevel <= minZoom" title="缩小">−</el-button>
+      <span class="zoom-level">{{ Math.round(zoomLevel * 100) }}%</span>
+      <el-button size="small" circle @click="zoomIn" :disabled="zoomLevel >= maxZoom" title="放大">+</el-button>
+      <el-button size="small" @click="resetZoomPan" title="重置为 100%">1:1</el-button>
     </div>
     
-    <!-- 标签输入弹窗 -->
+    <!-- 标签输入弹窗：挂载到 body 并提高 z-index，确保画布缩放/层级下仍能显示 -->
     <el-dialog
       v-model="isLabelDialogVisible"
       title="输入标签"
       width="30%"
       :close-on-click-modal="false"
+      append-to-body
+      :z-index="3000"
     >
       <el-form :model="labelForm" label-width="80px">
         <el-form-item label="标签名称">
@@ -158,7 +181,7 @@
 </style>
 
 <script setup>
-import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue';
 import { ElMessage, ElSelect, ElOption } from 'element-plus';
 import { saveSingleAnnotation } from '@/api/annotation.js';
 
@@ -178,6 +201,11 @@ const props = defineProps({
   selectedTool: {
     type: String,
     default: 'object_detection'
+  },
+  /** 从外部（如标注列表）选中的标注索引，用于联动高亮 */
+  selectedAnnotationIndex: {
+    type: Number,
+    default: -1
   }
 });
 
@@ -186,8 +214,73 @@ const emit = defineEmits(['update:annotations', 'polygon-completed']);
 // 引用和状态
 const displayImage = ref(null);
 const annotationCanvas = ref(null);
+const zoomPanWrapperRef = ref(null);
+const zoomPanInnerRef = ref(null);
 const imageLoaded = ref(false);
 let retryCount = 0;
+
+// 缩放与平移
+const minZoom = 0.5;
+const maxZoom = 3;
+const zoomLevel = ref(1);
+const panX = ref(0);
+const panY = ref(0);
+const isPanning = ref(false);
+const isSpacePressed = ref(false);
+const panStart = ref({ x: 0, y: 0, panX: 0, panY: 0 });
+
+const zoomPanInnerStyle = computed(() => ({
+  transform: `translate(${panX.value}px, ${panY.value}px) scale(${zoomLevel.value})`,
+  transformOrigin: '0 0'
+}));
+
+const handleWheel = (e) => {
+  // 仅按住 Ctrl + 滚轮时缩放，避免误触
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  const wrapper = zoomPanWrapperRef.value;
+  if (!wrapper) return;
+  const rect = wrapper.getBoundingClientRect();
+  const mouseX = e.clientX - rect.left;
+  const mouseY = e.clientY - rect.top;
+  const factor = e.deltaY > 0 ? 0.9 : 1.1;
+  const newZoom = Math.min(maxZoom, Math.max(minZoom, zoomLevel.value * factor));
+  const newPanX = mouseX - (mouseX - panX.value) * (newZoom / zoomLevel.value);
+  const newPanY = mouseY - (mouseY - panY.value) * (newZoom / zoomLevel.value);
+  zoomLevel.value = newZoom;
+  panX.value = newPanX;
+  panY.value = newPanY;
+};
+
+const zoomIn = () => {
+  const wrapper = zoomPanWrapperRef.value;
+  if (!wrapper) return;
+  const rect = wrapper.getBoundingClientRect();
+  const mouseX = rect.width / 2;
+  const mouseY = rect.height / 2;
+  const newZoom = Math.min(maxZoom, zoomLevel.value + 0.25);
+  panX.value = mouseX - (mouseX - panX.value) * (newZoom / zoomLevel.value);
+  panY.value = mouseY - (mouseY - panY.value) * (newZoom / zoomLevel.value);
+  zoomLevel.value = newZoom;
+};
+
+const zoomOut = () => {
+  const wrapper = zoomPanWrapperRef.value;
+  if (!wrapper) return;
+  const rect = wrapper.getBoundingClientRect();
+  const mouseX = rect.width / 2;
+  const mouseY = rect.height / 2;
+  const newZoom = Math.max(minZoom, zoomLevel.value - 0.25);
+  panX.value = mouseX - (mouseX - panX.value) * (newZoom / zoomLevel.value);
+  panY.value = mouseY - (mouseY - panY.value) * (newZoom / zoomLevel.value);
+  zoomLevel.value = newZoom;
+};
+
+const resetZoomPan = () => {
+  zoomLevel.value = 1;
+  panX.value = 0;
+  panY.value = 0;
+};
 
 // 人工标注相关状态
 const isDrawingPolygon = ref(false);
@@ -279,8 +372,8 @@ const handleContextMenu = (event) => {
   
   const canvas = annotationCanvas.value;
   const rect = canvas.getBoundingClientRect();
-  const x = ((event.clientX - rect.left) / canvas.width) * 100;
-  const y = ((event.clientY - rect.top) / canvas.height) * 100;
+  const x = ((event.clientX - rect.left) / rect.width) * 100;
+  const y = ((event.clientY - rect.top) / rect.height) * 100;
   
   // 检查是否点击了多边形
   const clickedPolygonIndex = checkPolygonVertexClick(x, y);
@@ -314,19 +407,15 @@ const handleContextMenu = (event) => {
 // 编辑选中的标注
 const editSelectedAnnotation = () => {
   if (selectedAnnotationIndex.value >= 0) {
-    // 复用标签输入弹窗，这样更简单可靠
-    // 设置待编辑的标注索引和类型
+    // 复用标签输入弹窗
     pendingAnnotationIndex.value = selectedAnnotationIndex.value;
     pendingAnnotationType.value = selectedAnnotationType.value;
-    
-    // 填充当前标签值到输入框
     labelForm.value.label = props.annotations[selectedAnnotationIndex.value].label || '';
-    
-    // 打开标签输入弹窗
-    isLabelDialogVisible.value = true;
-    
-    // 关闭右键菜单
     isContextMenuVisible.value = false;
+    // 下一帧再打开弹窗，确保右键菜单关闭后再显示
+    nextTick(() => {
+      isLabelDialogVisible.value = true;
+    });
   }
 };
 
@@ -396,6 +485,11 @@ const onImageLoad = async () => {
     // 设置canvas尺寸与图片显示尺寸一致
     canvas.width = img.clientWidth;
     canvas.height = img.clientHeight;
+    
+    // 切换图片时重置缩放与平移
+    zoomLevel.value = 1;
+    panX.value = 0;
+    panY.value = 0;
     
     imageLoaded.value = true;
     console.log('图片加载完成，Canvas尺寸设置为:', canvas.width, 'x', canvas.height);
@@ -900,55 +994,72 @@ const checkPolygonVertexClick = (x, y) => {
 };
 
 // 检查是否点击了边界框、OBB框或旋转控制点
+// 优先检测旋转控制点（避免点击 OBB 旋转点时被大框“抢选”）
 const checkBoxClick = (x, y) => {
+  const canvas = annotationCanvas.value;
+  if (!canvas) return { index: -1, isRotationHandle: false };
+  const pixelX = (x / 100) * canvas.width;
+  const pixelY = (y / 100) * canvas.height;
+  const rotationHandleRadius = 15;
+
+  // 第一轮：只检测旋转控制点，命中则立即返回（保证旋转优先于框体选中）
   for (let i = 0; i < props.annotations.length; i++) {
     const annotation = props.annotations[i];
     if ((annotation.type === 'bbox' || annotation.type === 'bounding_box' || annotation.type === 'obb') && annotation.bbox) {
       const { x: boxX, y: boxY, width, height, angle = 0 } = annotation.bbox;
-      const canvas = annotationCanvas.value;
-      
-      // 转换为像素坐标
       const pixelBoxX = (boxX / 100) * canvas.width;
       const pixelBoxY = (boxY / 100) * canvas.height;
       const pixelWidth = (width / 100) * canvas.width;
       const pixelHeight = (height / 100) * canvas.height;
-      const pixelX = (x / 100) * canvas.width;
-      const pixelY = (y / 100) * canvas.height;
-      
-      // 计算边界框中心
       const centerX = pixelBoxX + pixelWidth / 2;
       const centerY = pixelBoxY + pixelHeight / 2;
-      
-      // 检查是否点击了旋转控制点（对所有类型的边界框都支持）
-      // 计算旋转控制点的位置（与drawOBB函数的绘制位置完全一致）
       const rotationHandleDistance = Math.max(pixelWidth, pixelHeight) / 2 + 20;
-      const rotationHandleRadius = 15; // 统一检测半径为15px，与drawOBB函数保持一致
-      
-      // 计算旋转后控制点的实际位置
-      // 注意：在drawOBB中，控制点是先旋转坐标系再绘制的，所以实际坐标需要进行反向转换
-      // 控制点在旋转后的坐标系中位于(0, -rotationHandleDistance)
-      // 转换到原始坐标系的公式为：
-      // x = centerX + Math.sin(angle) * rotationHandleDistance;
-      // y = centerY - Math.cos(angle) * rotationHandleDistance;
       const handleX = centerX - Math.sin(angle) * rotationHandleDistance;
       const handleY = centerY - Math.cos(angle) * rotationHandleDistance;
-      
-      // 检查是否点击了旋转控制点
       const distance = Math.sqrt((pixelX - handleX) ** 2 + (pixelY - handleY) ** 2);
       if (distance <= rotationHandleRadius) {
         return { index: i, isRotationHandle: true };
       }
-      
-      // 检查是否点击了边界框（考虑旋转，对所有类型的边界框都支持）
-      // 将点击点转换到边界框的局部坐标系
+    }
+  }
+
+  // 第二轮：检测点击是否在某个框体内
+  // 若当前已有选中框（如从标注列表点选），且点击点在该框内，优先保持选中该框，避免被外层大框“抢选”
+  const cur = activeBoxIndex.value;
+  if (cur >= 0 && cur < props.annotations.length) {
+    const annotation = props.annotations[cur];
+    if ((annotation.type === 'bbox' || annotation.type === 'bounding_box' || annotation.type === 'obb') && annotation.bbox) {
+      const { x: boxX, y: boxY, width, height, angle = 0 } = annotation.bbox;
+      const pixelBoxX = (boxX / 100) * canvas.width;
+      const pixelBoxY = (boxY / 100) * canvas.height;
+      const pixelWidth = (width / 100) * canvas.width;
+      const pixelHeight = (height / 100) * canvas.height;
+      const centerX = pixelBoxX + pixelWidth / 2;
+      const centerY = pixelBoxY + pixelHeight / 2;
       const dx = pixelX - centerX;
       const dy = pixelY - centerY;
-      
-      // 反向旋转点击点
       const rotatedX = dx * Math.cos(-angle) - dy * Math.sin(-angle);
       const rotatedY = dx * Math.sin(-angle) + dy * Math.cos(-angle);
-      
-      // 检查是否在边界框内
+      if (rotatedX >= -pixelWidth / 2 && rotatedX <= pixelWidth / 2 &&
+          rotatedY >= -pixelHeight / 2 && rotatedY <= pixelHeight / 2) {
+        return { index: cur, isRotationHandle: false };
+      }
+    }
+  }
+  for (let i = 0; i < props.annotations.length; i++) {
+    const annotation = props.annotations[i];
+    if ((annotation.type === 'bbox' || annotation.type === 'bounding_box' || annotation.type === 'obb') && annotation.bbox) {
+      const { x: boxX, y: boxY, width, height, angle = 0 } = annotation.bbox;
+      const pixelBoxX = (boxX / 100) * canvas.width;
+      const pixelBoxY = (boxY / 100) * canvas.height;
+      const pixelWidth = (width / 100) * canvas.width;
+      const pixelHeight = (height / 100) * canvas.height;
+      const centerX = pixelBoxX + pixelWidth / 2;
+      const centerY = pixelBoxY + pixelHeight / 2;
+      const dx = pixelX - centerX;
+      const dy = pixelY - centerY;
+      const rotatedX = dx * Math.cos(-angle) - dy * Math.sin(-angle);
+      const rotatedY = dx * Math.sin(-angle) + dy * Math.cos(-angle);
       if (rotatedX >= -pixelWidth / 2 && rotatedX <= pixelWidth / 2 &&
           rotatedY >= -pixelHeight / 2 && rotatedY <= pixelHeight / 2) {
         return { index: i, isRotationHandle: false };
@@ -972,11 +1083,11 @@ const checkBoxResizeHandle = (event) => {
     if ((annotation.type === 'bbox' || annotation.type === 'bounding_box' || annotation.type === 'obb') && annotation.bbox) {
       const { x, y, width, height, angle = 0 } = annotation.bbox;
       
-      // 转换为像素坐标
-      const pixelBoxX = (x / 100) * canvas.width;
-      const pixelBoxY = (y / 100) * canvas.height;
-      const pixelBoxWidth = (width / 100) * canvas.width;
-      const pixelBoxHeight = (height / 100) * canvas.height;
+      // 转换为视觉像素坐标（与 rect 一致，支持缩放）
+      const pixelBoxX = (x / 100) * rect.width;
+      const pixelBoxY = (y / 100) * rect.height;
+      const pixelBoxWidth = (width / 100) * rect.width;
+      const pixelBoxHeight = (height / 100) * rect.height;
       
       // 计算边界框中心
       const centerX = pixelBoxX + pixelBoxWidth / 2;
@@ -1035,8 +1146,8 @@ const updateCursorStyle = (event) => {
   
   // 检查是否悬停在旋转控制点上
   const rect = canvas.getBoundingClientRect();
-  const x = ((event.clientX - rect.left) / canvas.width) * 100;
-  const y = ((event.clientY - rect.top) / canvas.height) * 100;
+  const x = ((event.clientX - rect.left) / rect.width) * 100;
+  const y = ((event.clientY - rect.top) / rect.height) * 100;
   const boxClickResult = checkBoxClick(x, y);
   
   if (boxClickResult.index >= 0) {
@@ -1117,10 +1228,6 @@ const completePolygon = () => {
   pendingAnnotationIndex.value = updatedAnnotations.length - 1;
   pendingAnnotationType.value = 'polygon';
   
-  // 打开标签输入弹窗
-  isLabelDialogVisible.value = true;
-  labelForm.value.label = '';
-  
   // 重置状态
   isDrawingPolygon.value = false;
   currentPolygonPoints.value = [];
@@ -1128,6 +1235,12 @@ const completePolygon = () => {
   
   // 重绘
   drawAnnotations();
+  
+  // 下一帧再打开标签弹窗
+  nextTick(() => {
+    labelForm.value.label = '';
+    isLabelDialogVisible.value = true;
+  });
 };
 
 // 完成边界框绘制
@@ -1193,16 +1306,18 @@ const completeBoundingBox = () => {
   // 保存待处理的标注索引和类型
   pendingAnnotationIndex.value = updatedAnnotations.length - 1;
   
-  // 打开标签输入弹窗
-  isLabelDialogVisible.value = true;
-  labelForm.value.label = '';
-  
   // 重置状态
   isDrawingBox.value = false;
   currentBox.value = null;
   
   // 重绘
   drawAnnotations();
+  
+  // 下一帧再打开标签弹窗，避免与父组件更新 annotations 同 tick 导致弹窗不显示
+  nextTick(() => {
+    labelForm.value.label = '';
+    isLabelDialogVisible.value = true;
+  });
 };
 
 // 更新标注标签
@@ -1225,26 +1340,42 @@ const updateAnnotationLabel = (annotationIndex, newLabel) => {
     drawAnnotations();
     
     // 只有当通过弹窗设置标签时才保存到后端并显示成功消息
+    // 不自动保存到后端，需用户点击「保存当前标注」才会持久化
     if (pendingAnnotationIndex.value >= 0) {
-      // 保存到后端
-      saveAnnotationToServer(updatedAnnotations[annotationIndex]);
-      ElMessage.success('标注成功添加！');
+      ElMessage.success('标签已填写，请点击「保存当前标注」后生效');
     } else {
-      ElMessage.success('标注标签已更新');
+      ElMessage.success('标签已更新');
     }
   }
 };
 
 // 鼠标事件处理
 const handleCanvasMouseDown = (event) => {
-  // 重置活动状态
+  // 空格 + 左键：平移画布
+  if (event.button === 0 && isSpacePressed.value) {
+    isPanning.value = true;
+    panStart.value = {
+      x: event.clientX,
+      y: event.clientY,
+      panX: panX.value,
+      panY: panY.value
+    };
+    event.preventDefault();
+    return;
+  }
+  
+  // 重置活动状态（非平移时）
   activePolygonIndex.value = -1;
-  activeBoxIndex.value = -1;
+  // 矩形/旋转框工具下不在此处清空 activeBoxIndex，保留列表或上次选中的框，供 checkBoxClick 做“当前选中优先”；只有点击空白开始绘制时再清空
+  if (props.selectedTool !== 'object_detection' && props.selectedTool !== 'object_detection_obb') {
+    activeBoxIndex.value = -1;
+  }
   
   const canvas = annotationCanvas.value;
   const rect = canvas.getBoundingClientRect();
-  const x = ((event.clientX - rect.left) / canvas.width) * 100;
-  const y = ((event.clientY - rect.top) / canvas.height) * 100;
+  // 使用 rect 宽高换算（缩放后 rect 为视觉尺寸），保证坐标正确
+  const x = ((event.clientX - rect.left) / rect.width) * 100;
+  const y = ((event.clientY - rect.top) / rect.height) * 100;
   
   // 右键点击已经在@contextmenu事件中处理，这里不再处理
   if (event.button === 2) { // 右键
@@ -1328,14 +1459,6 @@ const handleCanvasMouseDown = (event) => {
           handleX: handleX, // 记录旋转控制点的位置
           handleY: handleY
         };
-        
-        // 添加调试信息
-        console.log('旋转模式参数：', {
-          centerX,
-          centerY,
-          startAngle,
-          boxStartPos: boxStartPos.value
-        });
       } else {
         // 点击了边界框，进入拖拽模式
         isDraggingBox.value = true;
@@ -1352,7 +1475,8 @@ const handleCanvasMouseDown = (event) => {
       // 阻止默认行为
       event.preventDefault();
     } else {
-      // 开始绘制新边界框
+      // 点击空白处，开始绘制新边界框；此时才清除框选中
+      activeBoxIndex.value = -1;
       isDrawingBox.value = true;
       currentBox.value = {
         startX: x,
@@ -1405,6 +1529,13 @@ const handleCanvasMouseDown = (event) => {
 };
 
 const handleCanvasMouseMove = (event) => {
+  // 平移画布
+  if (isPanning.value) {
+    panX.value = panStart.value.panX + (event.clientX - panStart.value.x);
+    panY.value = panStart.value.panY + (event.clientY - panStart.value.y);
+    return;
+  }
+  
   // 更新鼠标指针样式
   updateCursorStyle(event);
   
@@ -1412,10 +1543,9 @@ const handleCanvasMouseMove = (event) => {
   if (isDraggingBox.value && activeBoxIndex.value >= 0) {
     const canvas = annotationCanvas.value;
     const rect = canvas.getBoundingClientRect();
-    
-    // 计算移动距离
-    const deltaX = (event.clientX - dragStartPos.value.x) / canvas.width * 100;
-    const deltaY = (event.clientY - dragStartPos.value.y) / canvas.height * 100;
+    // 计算移动距离（使用 rect 以支持缩放）
+    const deltaX = (event.clientX - dragStartPos.value.x) / rect.width * 100;
+    const deltaY = (event.clientY - dragStartPos.value.y) / rect.height * 100;
     
     // 更新标注
     const updatedAnnotations = [...props.annotations];
@@ -1479,10 +1609,9 @@ const handleCanvasMouseMove = (event) => {
   if (isResizingBox.value && activeBoxIndex.value >= 0) {
     const canvas = annotationCanvas.value;
     const rect = canvas.getBoundingClientRect();
-    
-    // 计算相对起始位置的偏移
-    const deltaX = (event.clientX - dragStartPos.value.x) / canvas.width * 100;
-    const deltaY = (event.clientY - dragStartPos.value.y) / canvas.height * 100;
+    // 计算相对起始位置的偏移（使用 rect 以支持缩放）
+    const deltaX = (event.clientX - dragStartPos.value.x) / rect.width * 100;
+    const deltaY = (event.clientY - dragStartPos.value.y) / rect.height * 100;
     
     // 更新标注
     const updatedAnnotations = [...props.annotations];
@@ -1535,8 +1664,8 @@ const handleCanvasMouseMove = (event) => {
   if (isDrawingBox.value && currentBox.value) {
     const canvas = annotationCanvas.value;
     const rect = canvas.getBoundingClientRect();
-    const x = ((event.clientX - rect.left) / canvas.width) * 100;
-    const y = ((event.clientY - rect.top) / canvas.height) * 100;
+    const x = ((event.clientX - rect.left) / rect.width) * 100;
+    const y = ((event.clientY - rect.top) / rect.height) * 100;
     
     currentBox.value.endX = x;
     currentBox.value.endY = y;
@@ -1548,8 +1677,8 @@ const handleCanvasMouseMove = (event) => {
   if (isDrawingPolygon.value) {
     const canvas = annotationCanvas.value;
     const rect = canvas.getBoundingClientRect();
-    const x = ((event.clientX - rect.left) / canvas.width) * 100;
-    const y = ((event.clientY - rect.top) / canvas.height) * 100;
+    const x = ((event.clientX - rect.left) / rect.width) * 100;
+    const y = ((event.clientY - rect.top) / rect.height) * 100;
     
     tempPoint.value = [x, y];
     drawAnnotations();
@@ -1557,6 +1686,10 @@ const handleCanvasMouseMove = (event) => {
 };
 
 const handleCanvasMouseUp = () => {
+  if (isPanning.value) {
+    isPanning.value = false;
+    return;
+  }
   // 重置拖拽、调整大小和旋转状态
   isDraggingBox.value = false;
   isResizingBox.value = false;
@@ -1570,6 +1703,9 @@ const handleCanvasMouseUp = () => {
 };
 
 const handleCanvasMouseLeave = () => {
+  if (isPanning.value) {
+    isPanning.value = false;
+  }
   tempPoint.value = null;
   isDraggingBox.value = false;
   isResizingBox.value = false;
@@ -1584,8 +1720,28 @@ const handleCanvasMouseLeave = () => {
   drawAnnotations();
 };
 
-// 处理键盘事件，支持删除选中的标注
+// 处理键盘事件：Esc 取消绘制，Delete/Backspace 删除选中
 const handleKeyDown = (event) => {
+  // Esc：取消当前绘制（框/多边形），不删除已有标注
+  if (event.key === 'Escape') {
+    if (isDrawingBox.value) {
+      isDrawingBox.value = false;
+      currentBox.value = null;
+    }
+    if (isDrawingPolygon.value) {
+      isDrawingPolygon.value = false;
+      currentPolygonPoints.value = [];
+      tempPoint.value = null;
+    }
+    drawAnnotations();
+    return;
+  }
+  // 空格：标记为按下，用于平移（在 keyup 时清除）
+  if (event.key === ' ') {
+    isSpacePressed.value = true;
+    event.preventDefault();
+    return;
+  }
   // 删除选中的边界框（包括OBB框）
   if ((event.key === 'Delete' || event.key === 'Backspace') && activeBoxIndex.value >= 0) {
     const updatedAnnotations = [...props.annotations];
@@ -1612,6 +1768,33 @@ const handleKeyDown = (event) => {
     ElMessage.success('标注已删除');
   }
 };
+
+const handleKeyUp = (event) => {
+  if (event.key === ' ') {
+    isSpacePressed.value = false;
+    isPanning.value = false;
+    event.preventDefault();
+  }
+};
+
+// 外部选中标注索引 → 同步到画布高亮
+watch(() => props.selectedAnnotationIndex, (index) => {
+  if (index < 0 || index >= props.annotations.length) {
+    activeBoxIndex.value = -1;
+    activePolygonIndex.value = -1;
+    return;
+  }
+  const ann = props.annotations[index];
+  const isBox = ann.type === 'bbox' || ann.type === 'bounding_box' || ann.type === 'obb';
+  if (isBox) {
+    activeBoxIndex.value = index;
+    activePolygonIndex.value = -1;
+  } else if (ann.type === 'polygon') {
+    activePolygonIndex.value = index;
+    activeBoxIndex.value = -1;
+  }
+  nextTick(() => drawAnnotations());
+}, { immediate: true });
 
 // 监听标注变化
 watch(() => props.annotations, () => {
@@ -1642,14 +1825,14 @@ const handleCanvasMouseEnter = (event) => {
 
 onMounted(() => {
   window.addEventListener('resize', resizeHandler);
-  // 添加键盘事件监听
   window.addEventListener('keydown', handleKeyDown);
+  window.addEventListener('keyup', handleKeyUp);
 });
 
 onUnmounted(() => {
   window.removeEventListener('resize', resizeHandler);
-  // 移除键盘事件监听
   window.removeEventListener('keydown', handleKeyDown);
+  window.removeEventListener('keyup', handleKeyUp);
 });
 </script>
 
@@ -1657,7 +1840,66 @@ onUnmounted(() => {
 .annotation-canvas-container {
   position: relative;
   width: 100%;
-  height: 100%;
+  max-width: 100%;
+  min-height: 200px;
+  box-sizing: border-box;
+}
+
+.canvas-zoom-pan-wrapper {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  min-height: 200px;
+  box-sizing: border-box;
+}
+
+.canvas-zoom-pan-inner {
+  display: inline-block;
+  position: relative;
+}
+
+.zoom-controls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  color: #fff;
+  z-index: 50;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+.zoom-controls-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e8f4ff;
+  margin-right: 4px;
+  white-space: nowrap;
+}
+.zoom-controls .zoom-level {
+  font-size: 14px;
+  font-weight: 600;
+  min-width: 44px;
+  text-align: center;
+  color: #fff;
+}
+.zoom-controls .el-button {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.4);
+  font-weight: 500;
+}
+.zoom-controls .el-button:hover:not(:disabled) {
+  color: #409eff;
+  border-color: #409eff;
+  background: rgba(64, 158, 255, 0.15);
+}
+.zoom-controls .el-button:disabled {
+  opacity: 0.45;
 }
 
 .image-wrapper {
@@ -1695,16 +1937,23 @@ onUnmounted(() => {
   width: 150px;
 }
 
-/* 提示信息样式 */
+/* 提示信息样式：左下角，与右上角缩放控件错开避免重叠 */
 .annotation-hint {
   position: absolute;
+  left: 10px;
   bottom: 10px;
-  right: 10px;
+  max-width: calc(100% - 140px);
   background: rgba(0, 0, 0, 0.7);
   color: white;
   padding: 5px 10px;
   border-radius: 4px;
   font-size: 12px;
   z-index: 100;
+}
+
+/* 输入标签弹窗内快速选择标签：悬停为手型，避免显示文本光标 */
+.quick-select-container :deep(.quick-select-tag),
+.quick-select-container .quick-select-tag {
+  cursor: pointer;
 }
 </style>

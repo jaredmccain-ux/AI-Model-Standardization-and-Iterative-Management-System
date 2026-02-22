@@ -1,7 +1,22 @@
 <template>
   <div class="page-container">
     <div class="header-section">
-      <h1>图像标注</h1>
+      <div class="header-title-row">
+        <h1>图像标注</h1>
+        <div class="project-stats" v-if="uploadedImages.length > 0">
+          <span>已标注 <strong>{{ projectStats.annotatedCount }}/{{ projectStats.totalImages }}</strong> 张</span>
+          <span class="stats-sep">·</span>
+          <span>共 <strong>{{ projectStats.totalBoxes }}</strong> 个目标</span>
+          <span class="stats-sep">·</span>
+          <span 
+            class="stats-link" 
+            v-if="projectStats.unannotatedCount > 0"
+            @click="goToFirstUnannotated"
+          >
+            未标注 {{ projectStats.unannotatedCount }} 张
+          </span>
+        </div>
+      </div>
       
       <!-- 第一行：上传按钮 -->
       <div class="toolbar-row" style="margin-bottom: 20px;">
@@ -99,6 +114,12 @@
             <el-option label="矩形框" value="object_detection"></el-option>
             <el-option label="旋转框(OBB)" value="object_detection_obb"></el-option>
           </el-select>
+          <el-button @click="undoAnnotation" :disabled="annotationHistoryPast.length === 0" title="撤销 (Ctrl+Z)">
+            撤销
+          </el-button>
+          <el-button @click="redoAnnotation" :disabled="annotationHistoryFuture.length === 0" title="重做 (Ctrl+Shift+Z)">
+            重做
+          </el-button>
           <el-button type="primary" @click="saveCurrentAnnotations" :disabled="currentAnnotations.length === 0">
             保存当前标注
           </el-button>
@@ -110,23 +131,27 @@
         <el-collapse>
           <el-collapse-item title="标注工具使用说明">
             <div class="tips-content">
-              <h4>矩形框标注：</h4>
+              <h4>矩形框</h4>
               <ul>
-                <li>选择"矩形框"工具</li>
-                <li>在图片上点击并拖拽，绘制矩形边界框</li>
-                <li>松开鼠标完成绘制，输入标签名称</li>
-                <li>点击已绘制的矩形框可以拖拽移动位置</li>
-                <li>拖动矩形框的四个角可以调整大小</li>
+                <li>选择「矩形框」后，在图片上左键拖拽绘制；松开后输入标签。</li>
+                <li>点击框可拖拽移动，拖动四角调整大小；右键点击框可删除。</li>
               </ul>
-              <h4>旋转框(OBB)标注：</h4>
+              <h4>旋转框(OBB)</h4>
               <ul>
-                <li>选择"旋转框(OBB)"工具</li>
-                <li>在图片上点击并拖拽，绘制初始矩形</li>
-                <li>松开鼠标完成绘制，输入标签名称</li>
-                <li>点击已绘制的旋转框可以拖拽移动位置</li>
-                <li>拖动旋转框的四个角可以调整大小</li>
-                <li>拖动绿色的圆形控制点可以旋转边界框</li>
-                <li>旋转框使用橙色线条标识，与普通矩形框（蓝色）区分</li>
+                <li>选择「旋转框(OBB)」后，左键拖拽绘制初始矩形，松开后输入标签。</li>
+                <li>点击框可移动，拖动四角调大小，拖动顶部绿色圆点旋转；橙色线表示旋转框，蓝色为普通矩形。</li>
+              </ul>
+              <h4>画布操作</h4>
+              <ul>
+                <li>Ctrl + 滚轮：缩放画布；空格 + 左键拖拽：平移画布。</li>
+                <li>右上角可点击「+」「−」「1:1」调节缩放。</li>
+              </ul>
+              <h4>快捷键</h4>
+              <ul>
+                <li>Esc：取消当前正在绘制的框。</li>
+                <li>Delete / Backspace：删除当前选中的标注。</li>
+                <li>Ctrl+Z：撤销；Ctrl+Shift+Z：重做（仅当前图片，最多约 20 步）。</li>
+                <li>A / D 或 ← / →：上一张 / 下一张图片。</li>
               </ul>
             </div>
           </el-collapse-item>
@@ -138,7 +163,7 @@
                 type="textarea"
                 :rows="3"
                 placeholder="例如：增加光照变化、添加轻微高斯噪声、水平翻转、逆时针旋转90度、提高对比度"
-                style="margin-bottom: 10px;"
+                class="augmentation-input"
               />
               <div class="augmentation-presets">
                 <el-button size="small" @click="augmentationInstruction = '增加亮度，亮度倍数约1.2'">光照增强</el-button>
@@ -153,7 +178,7 @@
                 :loading="isAugmenting"
                 :disabled="uploadedImages.length === 0"
                 @click="runAugmentation"
-                style="margin-top: 10px;"
+                class="augmentation-submit"
               >
                 {{ isAugmenting ? '增广中…' : '执行增广' }}
               </el-button>
@@ -177,6 +202,7 @@
           <el-option label="COCO" value="coco"></el-option>
           <el-option label="Pascal VOC" value="voc"></el-option>
           <el-option label="YOLO" value="yolo"></el-option>
+          <el-option label="DOTA (OBB)" value="dota"></el-option>
           <el-option label="CSV" value="csv"></el-option>
           <el-option label="YAML" value="yaml"></el-option>
         </el-select>
@@ -237,6 +263,9 @@
           ref="imageGalleryRef"
           :images="uploadedImages"
           :currentIndex="currentImageIndex"
+          :annotationStats="annotationStats"
+          :filterOption="galleryFilter"
+          @update:filterOption="galleryFilter = $event"
           @select="selectImage"
           @remove="removeImage"
           @batchAnnotate="handleBatchAnnotate"
@@ -283,26 +312,35 @@
               :imageName="currentImage?.name"
               :annotations="currentAnnotations"
               :selectedTool="selectedTool"
+              :selected-annotation-index="selectedAnnotationIndexForCanvas"
               @update:annotations="updateAnnotations"
               @polygon-completed="handlePolygonCompleted"
             />
           </div>
         </div>
 
-        <!-- 标注结果列表组件 -->
-        <AnnotationList 
-          v-if="currentAnnotations.length > 0" 
-          :annotations="currentAnnotations" 
-          :initialVisible="annotationsVisible"
-          @toggle="annotationsVisible = !annotationsVisible"
-        />
+        <!-- 标注框信息栏：始终预留区域，有标注时展示列表 -->
+        <div class="annotation-list-wrapper" :class="{ 'has-annotations': currentAnnotations.length > 0 }">
+          <AnnotationList 
+            v-if="currentAnnotations.length > 0" 
+            :annotations="currentAnnotations" 
+            :initialVisible="annotationsVisible"
+            :selected-index="selectedAnnotationIndexForCanvas"
+            @toggle="annotationsVisible = !annotationsVisible"
+            @select="selectedAnnotationIndexForCanvas = $event"
+          />
+          <div v-else class="annotation-list-empty">
+            <span>当前图片暂无标注，绘制框后可在此查看标注信息</span>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+defineOptions({ name: 'ImageAnnotation' });
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { ElMessage, ElMessageBox, ElUpload, ElButton, ElSelect, ElOption, ElCheckboxGroup, ElCheckbox, ElInput, ElForm, ElFormItem, ElDialog, ElRadioGroup, ElRadio, ElBadge } from 'element-plus';
 import { Plus, Document, Upload } from '@element-plus/icons-vue';
 import { annotateImage, exportAnnotationData, saveSingleAnnotation, saveBatchAnnotations, deleteAnnotation, getImageAnnotations } from '@/api/annotation.js';
@@ -328,6 +366,15 @@ const imageAnnotations = ref({}); // 存储每张图片的标注结果，格式�
 const annotationMode = ref('manual'); // 'manual' 或 'auto'
 const exportFormat = ref('json'); // 导出格式，默认为JSON
 const savedAnnotations = ref({}); // 已保存的标注数据，用于恢复，注意：这是对象不是数组！
+const galleryFilter = ref('all'); // 图片库筛选：all / annotated / unannotated
+
+// 撤销/重做：当前图片的标注历史栈（最多 20 步）
+const MAX_ANNOTATION_HISTORY = 20;
+const annotationHistoryPast = ref([]);   // 过去状态，undo 时从栈顶取出
+const annotationHistoryFuture = ref([]); // 重做栈，redo 时从栈顶取出
+
+// 标注列表与画布联动：当前在列表中选中的标注索引（画布会高亮该项）
+const selectedAnnotationIndexForCanvas = ref(-1);
 
 // 智能体数据增广
 const imageGalleryRef = ref(null);
@@ -370,11 +417,45 @@ const currentImage = computed(() => {
 // 使用已定义的availableModels ref
 
 const currentImageUrl = computed(() => {
-  // 优先使用标注后的图片URL
   return annotatedImageUrl.value || currentImage.value?.url || '';
 });
 
-// currentImageFile已在其他位置定义
+// 图片库：每张图的标注数量与是否已保存（与 uploadedImages 索引对应）
+const annotationStats = computed(() => {
+  const list = uploadedImages.value;
+  return list.map((_, i) => ({
+    count: (imageAnnotations.value[i] || []).length,
+    saved: !!savedAnnotations.value[i]
+  }));
+});
+
+// 项目进度统计
+const projectStats = computed(() => {
+  const total = uploadedImages.value.length;
+  let annotatedCount = 0;
+  let totalBoxes = 0;
+  for (let i = 0; i < total; i++) {
+    const n = (imageAnnotations.value[i] || []).length;
+    if (n > 0) annotatedCount++;
+    totalBoxes += n;
+  }
+  return {
+    totalImages: total,
+    annotatedCount,
+    unannotatedCount: total - annotatedCount,
+    totalBoxes
+  };
+});
+
+// 跳转到第一张未标注的图片
+function goToFirstUnannotated() {
+  for (let i = 0; i < uploadedImages.value.length; i++) {
+    if (!(imageAnnotations.value[i] || []).length) {
+      selectImage(i);
+      return;
+    }
+  }
+}
 
 // 工具类型变更处理
 const handleToolChange = () => {
@@ -558,6 +639,20 @@ const autoAnnotate = async () => {
   }
 };
 
+// 通过加载图片获取真实宽高（用于导出 COCO/VOC/DOTA 等需要像素尺寸的格式）
+const getImageDimensions = (url) => {
+  return new Promise((resolve) => {
+    if (!url) {
+      resolve({ width: 0, height: 0 });
+      return;
+    }
+    const img = new Image();
+    img.onload = () => resolve({ width: img.naturalWidth || 0, height: img.naturalHeight || 0 });
+    img.onerror = () => resolve({ width: 0, height: 0 });
+    img.src = url;
+  });
+};
+
 // 导出标注结果
 const exportAnnotations = async () => {
   if (currentAnnotations.value.length === 0) {
@@ -565,14 +660,15 @@ const exportAnnotations = async () => {
     return;
   }
   
-  // 构建导出数据
+  const { width, height } = await getImageDimensions(currentImage.value?.url);
   const exportData = {
     image: currentImage.value?.name,
     annotations: currentAnnotations.value,
-    tool: selectedTool.value
+    tool: selectedTool.value,
+    width,
+    height
   };
   
-  // 获取导出内容和格式信息
   const { content, mimeType, extension } = exportAnnotationData(exportData, exportFormat.value);
   const exportFileName = `${currentImage.value?.name.split('.')[0]}_annotations.${extension}`;
   
@@ -663,39 +759,31 @@ const batchExportAnnotations = async (selectedIndices) => {
   const JSZip = (await import('jszip')).default;
   const zip = new JSZip();
   
-  // 如果是YOLO格式，需要创建classes.txt文件
   if (exportFormat.value === 'yolo') {
-    // 收集所有类别
     const allCategories = new Set();
     annotatedImages.forEach(index => {
       imageAnnotations.value[index].forEach(annotation => {
-        if (annotation.label) {
-          allCategories.add(annotation.label);
-        }
+        if (annotation.label) allCategories.add(annotation.label);
       });
     });
-    const categoriesArray = Array.from(allCategories);
-    zip.file('classes.txt', categoriesArray.join('\n'));
+    zip.file('classes.txt', Array.from(allCategories).join('\n'));
   }
   
-  // 添加每个图片的标注结果到ZIP
-  annotatedImages.forEach(index => {
+  for (const index of annotatedImages) {
     const image = uploadedImages.value[index];
-    if (!image) return;
-    
+    if (!image) continue;
+    const { width, height } = await getImageDimensions(image.url);
     const exportData = {
       image: image.name,
       annotations: imageAnnotations.value[index],
-      tool: selectedTool.value
+      tool: selectedTool.value,
+      width,
+      height
     };
-    
-    // 根据选择的格式获取内容
     const { content, extension } = exportAnnotationData(exportData, exportFormat.value);
     const fileName = `${image.name.split('.')[0]}_annotations.${extension}`;
-    
-    // 添加到ZIP
     zip.file(fileName, content);
-  });
+  }
   
   // 生成ZIP文件
   zip.generateAsync({ type: 'blob' }).then(async (content) => {
@@ -786,16 +874,11 @@ const handleFileChange = async (file) => {
   const newIndex = uploadedImages.value.length - 1;
   imageAnnotations.value = { ...imageAnnotations.value, [newIndex]: [] };
   
-  // 如果是第一张图片，自动选中
+  // 如果是第一张图片，自动选中；不自动从后端拉取标注，避免新图显示旧会话的标注
   if (uploadedImages.value.length === 1) {
     currentImageIndex.value = 0;
-    currentImageFile.value = file.raw; // 设置当前图片文件
+    currentImageFile.value = file.raw;
     currentAnnotations.value = [];
-    
-    // 尝试加载已有标注
-    if (annotationMode.value === 'manual') {
-      await loadExistingAnnotations(0);
-    }
   }
   
   ElMessage.success(`成功上传图片: ${file.name}`);
@@ -1191,12 +1274,10 @@ const handleAnnotationImport = async (file) => {
         
         // 检查当前是否有选中的图片
         if (currentImageIndex.value >= 0) {
-          // 更新当前图片的标注
           currentAnnotations.value = [...processedAnnotations];
           imageAnnotations.value = { ...imageAnnotations.value, [currentImageIndex.value]: [...processedAnnotations] };
-          savedAnnotations.value = { ...savedAnnotations.value, [currentImageIndex.value]: [...processedAnnotations] };
-          
-          ElMessage.success(`成功导入 ${processedAnnotations.length} 个标注`);
+          // 不写入 savedAnnotations，导入的标注需点击「保存当前标注」后才持久化
+          ElMessage.success(`成功导入 ${processedAnnotations.length} 个标注，请点击「保存当前标注」后生效`);
         } else {
           ElMessage.warning('请先选择一张图片，然后再导入标注文件');
         }
@@ -1460,10 +1541,8 @@ const importAnnotatedImages = async () => {
             // 保存标注到状态变量
             console.log('设置标注到状态变量，图片索引:', newIndex);
             
-            // 直接设置标注数据到对象属性（用新对象替换以触发响应式）
             imageAnnotations.value = { ...imageAnnotations.value, [newIndex]: [...annotations] };
-            savedAnnotations.value = { ...savedAnnotations.value, [newIndex]: [...annotations] };
-            
+            // 不写入 savedAnnotations，批量导入的标注需用户点击「保存当前标注」后才持久化
             console.log('状态变量更新后:');
             console.log('imageAnnotations[', newIndex, ']长度:', imageAnnotations.value[newIndex]?.length || 0);
             console.log('savedAnnotations[', newIndex, ']长度:', savedAnnotations.value[newIndex]?.length || 0);
@@ -1577,11 +1656,10 @@ const importAnnotatedImages = async () => {
       // 触发computed属性的重新计算
       console.log('触发currentImageUrl重新计算:', currentImageUrl.value);
       
-      // 立即更新imageAnnotations和savedAnnotations，确保数据一致性
+      // 仅更新 imageAnnotations（会话内显示）；不写入 savedAnnotations，只有点击「保存当前标注」才写入
       if (currentImageIndex.value >= 0) {
         imageAnnotations.value = { ...imageAnnotations.value, [currentImageIndex.value]: [...currentAnnotations.value] };
-        savedAnnotations.value = { ...savedAnnotations.value, [currentImageIndex.value]: [...currentAnnotations.value] };
-        console.log('同步更新imageAnnotations和savedAnnotations，确保数据一致性');
+        console.log('同步更新 imageAnnotations');
       }
       
       // 强制AnnotationCanvas组件重新渲染的备用方案
@@ -2100,6 +2178,9 @@ const handleModeChange = async (mode) => {
 // 选择图片
 const selectImage = async (index) => {
   if (index >= 0 && index < uploadedImages.value.length) {
+    // 切换图片时清空当前图片的撤销/重做栈
+    annotationHistoryPast.value = [];
+    annotationHistoryFuture.value = [];
     // 保存当前图片的标注结果（用新对象替换以触发响应式，切换回来时能正确显示）
     if (currentImageIndex.value >= 0 && currentAnnotations.value.length > 0) {
       imageAnnotations.value = { ...imageAnnotations.value, [currentImageIndex.value]: [...currentAnnotations.value] };
@@ -2123,12 +2204,8 @@ const selectImage = async (index) => {
         currentAnnotations.value = [...aiGeneratedAnnotations];
         ElMessage.info(`已使用 ${aiGeneratedAnnotations.length} 个AI标注结果作为手动标注的基础`);
       } else {
-        // 都没有则使用当前本地状态（可能用户刚清除过，不要从后端恢复）
+        // 都没有则使用当前会话的 imageAnnotations，不自动从后端拉取（避免新导入的图片因同名而加载到旧标注）
         currentAnnotations.value = [...aiGeneratedAnnotations];
-        // 仅当该图片从未加载过本地/服务器数据时，才从后端拉取（避免清除后切换图片再切回来被接口数据覆盖）
-        if (savedAnnotations.value[index] === undefined && imageAnnotations.value[index] === undefined) {
-          await loadExistingAnnotations(index);
-        }
       }
     } else if (annotationMode.value === 'auto') {
       // 自动模式下使用AI生成的标注
@@ -2231,8 +2308,47 @@ const runAugmentation = async () => {
   }
 };
 
+// 深拷贝当前标注列表（用于历史栈）
+function deepCloneAnnotations(list) {
+  return list.map(ann => ({
+    ...ann,
+    bbox: ann.bbox ? { ...ann.bbox } : undefined
+  }));
+}
+
+// 在用户修改前把当前状态压入历史（仅对手动模式当前图片有效）
+function pushAnnotationHistoryCurrent() {
+  if (currentImageIndex.value < 0 || annotationMode.value !== 'manual') return;
+  const snap = deepCloneAnnotations(currentAnnotations.value);
+  annotationHistoryPast.value = [...annotationHistoryPast.value.slice(-(MAX_ANNOTATION_HISTORY - 1)), snap];
+  annotationHistoryFuture.value = [];
+}
+
+// 撤销
+function undoAnnotation() {
+  if (annotationHistoryPast.value.length === 0) return;
+  const prev = annotationHistoryPast.value.pop();
+  annotationHistoryFuture.value = [...annotationHistoryFuture.value, deepCloneAnnotations(currentAnnotations.value)];
+  currentAnnotations.value = prev;
+  if (currentImageIndex.value >= 0) {
+    imageAnnotations.value = { ...imageAnnotations.value, [currentImageIndex.value]: [...prev] };
+  }
+}
+
+// 重做
+function redoAnnotation() {
+  if (annotationHistoryFuture.value.length === 0) return;
+  const next = annotationHistoryFuture.value.pop();
+  annotationHistoryPast.value = [...annotationHistoryPast.value, deepCloneAnnotations(currentAnnotations.value)];
+  currentAnnotations.value = next;
+  if (currentImageIndex.value >= 0) {
+    imageAnnotations.value = { ...imageAnnotations.value, [currentImageIndex.value]: [...next] };
+  }
+}
+
 // 更新标注
 const updateAnnotations = (annotations) => {
+  pushAnnotationHistoryCurrent();
   // 确保标注数据格式正确，创建新数组以触发响应式更新
   const processedAnnotations = annotations.map(ann => {
     const newAnn = { ...ann };
@@ -2470,10 +2586,9 @@ const handleBatchAnnotate = async (selectedIndices) => {
 
 // 在组件挂载时初始化
 onMounted(() => {
-  // 默认选择目标检测工具
   selectedTool.value = 'object_detection';
-  // 初始化可用模型列表
   handleToolChange();
+  window.addEventListener('keydown', globalNavKeydown);
 });
 
 // 触发批量标注所有图片
@@ -2511,9 +2626,41 @@ const nextImage = () => {
   }
 };
 
+// 全局快捷键：上一张/下一张（A/D 或 ←/→）；撤销 Ctrl+Z、重做 Ctrl+Shift+Z
+const globalNavKeydown = (e) => {
+  const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+  if (e.ctrlKey && e.key.toLowerCase() === 'z') {
+    if (e.shiftKey) {
+      if (annotationHistoryFuture.value.length > 0) {
+        redoAnnotation();
+        e.preventDefault();
+      }
+    } else {
+      if (annotationHistoryPast.value.length > 0) {
+        undoAnnotation();
+        e.preventDefault();
+      }
+    }
+    return;
+  }
+  if (uploadedImages.value.length === 0) return;
+  if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'a') {
+    previousImage();
+    if (currentImageIndex.value > 0) e.preventDefault();
+  } else if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'd') {
+    nextImage();
+    if (currentImageIndex.value < uploadedImages.value.length - 1) e.preventDefault();
+  }
+};
+
+watch(currentImageIndex, () => {
+  selectedAnnotationIndexForCanvas.value = -1;
+});
+
 // 在组件卸载时清理
 onUnmounted(() => {
-  // 释放所有创建的URL对象
+  window.removeEventListener('keydown', globalNavKeydown);
   uploadedImages.value.forEach(image => {
     URL.revokeObjectURL(image.url);
   });
@@ -2529,6 +2676,9 @@ onUnmounted(() => {
   padding: 20px;
   overflow-x: hidden;
   overflow-y: auto;
+  width: 100%;
+  max-width: 100vw;
+  box-sizing: border-box;
 }
 
 /* 头部区域 */
@@ -2539,13 +2689,48 @@ onUnmounted(() => {
   padding: 20px;
   border-radius: 8px;
   box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.05);
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
-.header-section h1 {
+.header-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
   margin-bottom: 20px;
+}
+
+.header-title-row h1 {
+  margin: 0;
   color: #1890ff;
-  text-align: center;
   font-size: 24px;
+}
+
+.project-stats {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 14px;
+  color: #606266;
+}
+
+.project-stats .stats-sep {
+  color: #c0c4cc;
+  user-select: none;
+}
+
+.project-stats .stats-link {
+  color: #409eff;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.project-stats .stats-link:hover {
+  text-decoration: underline;
 }
 
 /* 工具栏行布局 */
@@ -2604,11 +2789,15 @@ onUnmounted(() => {
   border: 1px solid #dcdfe6;
 }
 
-/* 内容区域 */
+/* 内容区域：避免浏览器缩放时横向溢出 */
 .content-section {
   flex: 1;
   min-height: 0;
-  overflow: visible;
+  overflow-x: hidden;
+  overflow-y: auto;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 /* 图片导航栏样式 */
@@ -2685,29 +2874,71 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-/* 主内容区域 - 新布局 */
+/* 主内容区域：图片区随图片自适应高度，整体可滚动，下方为标注信息栏 */
 .main-content {
   background-color: #fff;
   border-radius: 8px;
   box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.05);
   display: flex;
   flex-direction: column;
-  min-height: 750px;
-  max-height: 1500px;
-  overflow: auto;
+  min-height: min(60vh, 600px);
+  max-height: 85vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  width: 100%;
+  box-sizing: border-box;
 }
 
-/* 图片显示区域 */
+/* 图片显示区域：不限制高度，随图片尺寸自适应 */
 .image-display-section {
-  flex: 1;
-  min-height: 0;
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  margin-bottom: 20px;
+  margin-bottom: 12px;
   background-color: #f5f7fa;
   border-radius: 8px;
   padding: 15px;
   box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.05);
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* 标注框信息栏：紧跟图片区下方，有固定最小高度 */
+.annotation-list-wrapper {
+  flex-shrink: 0;
+  min-height: 200px;
+  margin-top: 0;
+  padding-top: 12px;
+  border-top: 1px solid #e4e7ed;
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  background: #fafafa;
+  border-radius: 0 0 8px 8px;
+}
+.annotation-list-wrapper.has-annotations {
+  min-height: 220px;
+}
+.annotation-list-wrapper :deep(.annotations-section) {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+.annotation-list-wrapper :deep(.annotations-list) {
+  min-height: 120px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.annotation-list-empty {
+  padding: 16px 20px;
+  background: #fafafa;
+  border: 1px dashed #e4e7ed;
+  border-radius: 8px;
+  color: #909399;
+  font-size: 13px;
+  text-align: center;
 }
 
 .current-image-info {
@@ -2730,12 +2961,15 @@ onUnmounted(() => {
   font-size: 14px;
 }
 
-/* 图片容器 */
+/* 图片容器：高度随图片自适应，不限制 */
 .image-container {
-  flex: 1;
-  min-height: 0;
+  flex: 0 0 auto;
+  min-height: 200px;
   display: flex;
   flex-direction: column;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .image-display {
@@ -2956,10 +3190,13 @@ onUnmounted(() => {
   border-radius: 8px;
   padding: 15px;
   margin-top: 20px;
-  max-height: 500px;
+  max-height: min(40vh, 500px);
   overflow-y: auto;
+  overflow-x: hidden;
   transition: max-height 0.3s ease;
   box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.05);
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .annotations-header {
@@ -2989,7 +3226,7 @@ onUnmounted(() => {
 
 .annotation-items {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 15.625rem), 1fr));
   gap: 10px;
 }
 
@@ -3044,19 +3281,67 @@ onUnmounted(() => {
   margin-top: 5px;
 }
 
+/* 标注说明与增广区域整体 */
+.annotation-tips {
+  margin: 18px 0;
+  background: #fff;
+  border-radius: 8px;
+  border: 1px solid #e4e7ed;
+  overflow: hidden;
+}
+.annotation-tips :deep(.el-collapse-item__header) {
+  padding-left: 20px;
+}
+.annotation-tips :deep(.el-collapse-item__wrap) {
+  border-bottom: none;
+}
+.annotation-tips :deep(.el-collapse-item__content) {
+  padding: 0;
+}
+
+/* 标注工具使用说明 - 内容区内边距 */
+.tips-content {
+  padding: 20px 24px 24px;
+}
+.tips-content h4 {
+  margin: 0 0 10px 0;
+  font-size: 14px;
+  color: #303133;
+  font-weight: 600;
+}
+.tips-content h4:not(:first-child) {
+  margin-top: 20px;
+}
+.tips-content ul {
+  margin: 0 0 4px 0;
+  padding-left: 22px;
+  color: #606266;
+  line-height: 1.65;
+}
+.tips-content li {
+  margin-bottom: 6px;
+}
+
 .augmentation-section {
-  padding: 8px 0;
+  padding: 20px 24px 24px;
 }
 .augmentation-tip {
-  font-size: 12px;
+  font-size: 13px;
   color: #606266;
-  margin-bottom: 10px;
+  line-height: 1.6;
+  margin: 0 0 14px 0;
+}
+.augmentation-input {
+  margin-bottom: 14px;
 }
 .augmentation-presets {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.augmentation-submit {
+  margin-top: 4px;
 }
 
 /* 响应式设计 */
