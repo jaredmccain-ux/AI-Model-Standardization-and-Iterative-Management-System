@@ -1,0 +1,26 @@
+﻿<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4F46E5" /> <!-- Indigo -->
+      <stop offset="100%" stop-color="#9333EA" /> <!-- Purple -->
+    </linearGradient>
+  </defs>
+  
+  <!-- Bounding Box Brackets (Focus Corners) -->
+  <path d="M64 144 V64 H144" stroke="url(#gradient)" stroke-width="48" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M368 64 H448 V144" stroke="url(#gradient)" stroke-width="48" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M448 368 V448 H368" stroke="url(#gradient)" stroke-width="48" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M144 448 H64 V368" stroke="url(#gradient)" stroke-width="48" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  
+  <!-- Central Eye (Vision) -->
+  <path d="M128 256 C128 256 192 160 256 160 C320 160 384 256 384 256 C384 256 320 352 256 352 C192 352 128 256 128 256 Z" stroke="url(#gradient)" stroke-width="32" fill="none" stroke-linejoin="round" stroke-linecap="round"/>
+  
+  <!-- Neural Pupil (AI Core) -->
+  <circle cx="256" cy="256" r="48" fill="url(#gradient)"/>
+  
+  <!-- Connection Nodes -->
+  <circle cx="256" cy="192" r="12" fill="#4F46E5" opacity="0.8"/>
+  <circle cx="256" cy="320" r="12" fill="#9333EA" opacity="0.8"/>
+  <circle cx="192" cy="256" r="12" fill="#4F46E5" opacity="0.8"/>
+  <circle cx="320" cy="256" r="12" fill="#9333EA" opacity="0.8"/>
+</svg>
