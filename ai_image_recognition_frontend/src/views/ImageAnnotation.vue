@@ -393,17 +393,31 @@ const availableModels = ref([]);
 // 按类型分组的模型
 const modelsByType = {
   object_detection: [
-    { value: 'YOLO', label: 'YOLO (目标检测)' },
-    { value: 'FasterRCNN', label: 'Faster R-CNN (目标检测)' }
+    { value: 'YOLO', label: 'YOLOv8-nano' },
+    { value: 'FasterRCNN', label: 'Faster R-CNN' },
+    { value: 'SSD', label: 'SSD' },
+    { value: 'yolov8n', label: 'YOLOv8-nano' },
+    { value: 'yolov8s', label: 'YOLOv8-small' },
+    { value: 'yolov8m', label: 'YOLOv8-medium' },
+    { value: 'yolov8l', label: 'YOLOv8-large' }
   ],
   image_classification: [
-    { value: 'ResNet', label: 'ResNet (图像分类)' },
-    { value: 'EfficientNet', label: 'EfficientNet (图像分类)' }
+    { value: 'ResNet', label: 'ResNet50' },
+    { value: 'EfficientNet', label: 'EfficientNet' },
+    { value: 'yolov8n-cls', label: 'YOLOv8-nano-Cls' },
+    { value: 'yolov8s-cls', label: 'YOLOv8-small-Cls' },
+    { value: 'yolov8m-cls', label: 'YOLOv8-medium-Cls' },
+    { value: 'yolov8l-cls', label: 'YOLOv8-large-Cls' },
+    { value: 'yolov8x-cls', label: 'YOLOv8-xlarge-Cls' }
   ],
   image_segmentation: [
-    { value: 'YOLO-Seg', label: 'YOLO-Seg (图像分割)' },
-    { value: 'SAM', label: 'SAM (图像分割)' },
-    { value: 'MaskRCNN', label: 'Mask R-CNN (图像分割)' }
+    { value: 'YOLO-Seg', label: 'YOLOv8-Seg' },
+    { value: 'SAM', label: 'SAM' },
+    { value: 'MaskRCNN', label: 'Mask R-CNN' },
+    { value: 'yolov8n-seg', label: 'YOLOv8-nano-Seg' },
+    { value: 'yolov8s-seg', label: 'YOLOv8-small-Seg' },
+    { value: 'yolov8m-seg', label: 'YOLOv8-medium-Seg' },
+    { value: 'yolov8l-seg', label: 'YOLOv8-large-Seg' }
   ]
 };
 

@@ -54,3 +54,6 @@ Thumbs.db
 
 # 千问 API Key（智能体数据增广），勿提交
 .augmentation_api_key
+
+ai-image-recognition-backend/downloaded_models/
+ai-image-recognition-backend/user_models/
