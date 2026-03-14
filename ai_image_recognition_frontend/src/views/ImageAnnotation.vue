@@ -89,24 +89,35 @@
           <el-option label="图像分类" value="image_classification"></el-option>
           <el-option label="图像分割" value="image_segmentation"></el-option>
         </el-select>
-        <el-select v-model="selectedModel" placeholder="选择模型" style="width: 180px; margin-right: 10px;">
-          <el-option 
-            v-for="model in availableModels" 
-            :key="model.value" 
-            :label="model.label" 
+        <el-select
+          v-model="selectedModel"
+          placeholder="选择模型"
+          style="width: 220px; margin-right: 10px;"
+          :loading="modelsLoading"
+          :disabled="isDownloadingModel"
+          @change="handleModelChange"
+          @visible-change="(visible) => visible && onModelSelectOpen()"
+        >
+          <el-option
+            v-for="model in availableModels"
+            :key="model.value"
+            :label="model.label"
             :value="model.value"
-          ></el-option>
+          />
         </el-select>
-        <el-button 
-          type="primary" 
-          @click="autoAnnotate" 
-          :disabled="!currentImageFile || !selectedTool || !selectedModel" 
+        <el-button type="success" plain @click="showImportModelDialog" :disabled="modelsLoading || isDownloadingModel">
+          导入模型
+        </el-button>
+        <el-button
+          type="primary"
+          @click="autoAnnotate"
+          :disabled="!currentImageFile || !selectedTool || !selectedModel || isDownloadingModel"
           :loading="isAutoAnnotating"
         >
           AI自动标注
         </el-button>
       </div>
-      
+
       <!-- 第三行：手动标注操作按钮 -->
       <div v-else-if="annotationMode === 'manual'" class="toolbar-row">
         <div class="manual-tools" style="display: flex; gap: 10px; align-items: center;">
@@ -335,6 +346,30 @@
         </div>
       </div>
     </div>
+    <!-- 导入模型弹窗 -->
+    <el-dialog v-model="importModelDialogVisible" title="导入自己的模型" width="480px" :close-on-click-modal="false">
+      <el-form :model="importModelForm" label-width="100px">
+        <el-form-item label="模型文件" required>
+          <el-upload :auto-upload="false" :limit="1" :on-change="onImportModelFileChange" accept=".pt,.pth,.onnx">
+            <el-button type="primary" size="small">选择文件 (.pt / .pth / .onnx)</el-button>
+          </el-upload>
+        </el-form-item>
+        <el-form-item label="模型名称" required>
+          <el-input v-model="importModelForm.name" placeholder="便于识别的名称" maxlength="64" show-word-limit />
+        </el-form-item>
+        <el-form-item label="任务类型" required>
+          <el-select v-model="importModelForm.task" placeholder="选择任务类型" style="width: 100%">
+            <el-option label="目标检测" value="detection" />
+            <el-option label="图像分割" value="segmentation" />
+            <el-option label="图像分类" value="classification" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="importModelDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="importModelUploading" @click="submitImportModel">导入</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -346,6 +381,7 @@ import { Plus, Document, Upload } from '@element-plus/icons-vue';
 import { annotateImage, exportAnnotationData, saveSingleAnnotation, saveBatchAnnotations, deleteAnnotation, getImageAnnotations } from '@/api/annotation.js';
 import { runAugmentation as runAugmentationAPI } from '@/api/augmentation.js';
 import { getUserConfig, saveUserConfig } from '@/utils/configManager.js';
+import { visioFirmAPI } from '@/api/visioFirm.js';
 
 // 导入组件
 import AnnotationCanvas from '@/components/annotation/AnnotationCanvas.vue';
@@ -387,37 +423,48 @@ const userConfig = ref(getUserConfig());
 // 类别管理
 const categories = ref(['person', 'car', 'dog', 'cat']); // 默认类别
 
-// 可用模型列表
+// 可用模型列表（展示用：{ value, label, isLocal, source }）
 const availableModels = ref([]);
+const apiModelsList = ref([]);
+const modelsLoading = ref(false);
+const isDownloadingModel = ref(false);
+const importModelDialogVisible = ref(false);
+const importModelForm = ref({ file: null, name: '', task: 'detection' });
+const importModelUploading = ref(false);
 
-// 按类型分组的模型
-const modelsByType = {
+const TOOL_TO_TASK = {
+  object_detection: 'detection',
+  image_classification: 'classification',
+  image_segmentation: 'segmentation'
+};
+
+const modelsByTypeFallback = {
   object_detection: [
-    { value: 'YOLO', label: 'YOLOv8-nano' },
-    { value: 'FasterRCNN', label: 'Faster R-CNN' },
-    { value: 'SSD', label: 'SSD' },
-    { value: 'yolov8n', label: 'YOLOv8-nano' },
-    { value: 'yolov8s', label: 'YOLOv8-small' },
-    { value: 'yolov8m', label: 'YOLOv8-medium' },
-    { value: 'yolov8l', label: 'YOLOv8-large' }
+    { value: 'YOLO', label: 'YOLOv8-nano', source: 'builtin', isLocal: true },
+    { value: 'FasterRCNN', label: 'Faster R-CNN', source: 'builtin', isLocal: true },
+    { value: 'SSD', label: 'SSD', source: 'builtin', isLocal: true },
+    { value: 'yolov8n', label: 'YOLOv8-nano', source: 'catalog', isLocal: false },
+    { value: 'yolov8s', label: 'YOLOv8-small', source: 'catalog', isLocal: false },
+    { value: 'yolov8m', label: 'YOLOv8-medium', source: 'catalog', isLocal: false },
+    { value: 'yolov8l', label: 'YOLOv8-large', source: 'catalog', isLocal: false }
   ],
   image_classification: [
-    { value: 'ResNet', label: 'ResNet50' },
-    { value: 'EfficientNet', label: 'EfficientNet' },
-    { value: 'yolov8n-cls', label: 'YOLOv8-nano-Cls' },
-    { value: 'yolov8s-cls', label: 'YOLOv8-small-Cls' },
-    { value: 'yolov8m-cls', label: 'YOLOv8-medium-Cls' },
-    { value: 'yolov8l-cls', label: 'YOLOv8-large-Cls' },
-    { value: 'yolov8x-cls', label: 'YOLOv8-xlarge-Cls' }
+    { value: 'ResNet', label: 'ResNet50', source: 'builtin', isLocal: true },
+    { value: 'EfficientNet', label: 'EfficientNet', source: 'builtin', isLocal: true },
+    { value: 'yolov8n-cls', label: 'YOLOv8-nano-Cls', source: 'catalog', isLocal: false },
+    { value: 'yolov8s-cls', label: 'YOLOv8-small-Cls', source: 'catalog', isLocal: false },
+    { value: 'yolov8m-cls', label: 'YOLOv8-medium-Cls', source: 'catalog', isLocal: false },
+    { value: 'yolov8l-cls', label: 'YOLOv8-large-Cls', source: 'catalog', isLocal: false },
+    { value: 'yolov8x-cls', label: 'YOLOv8-xlarge-Cls', source: 'catalog', isLocal: false }
   ],
   image_segmentation: [
-    { value: 'YOLO-Seg', label: 'YOLOv8-Seg' },
-    { value: 'SAM', label: 'SAM' },
-    { value: 'MaskRCNN', label: 'Mask R-CNN' },
-    { value: 'yolov8n-seg', label: 'YOLOv8-nano-Seg' },
-    { value: 'yolov8s-seg', label: 'YOLOv8-small-Seg' },
-    { value: 'yolov8m-seg', label: 'YOLOv8-medium-Seg' },
-    { value: 'yolov8l-seg', label: 'YOLOv8-large-Seg' }
+    { value: 'YOLO-Seg', label: 'YOLOv8-Seg', source: 'builtin', isLocal: true },
+    { value: 'SAM', label: 'SAM', source: 'builtin', isLocal: true },
+    { value: 'MaskRCNN', label: 'Mask R-CNN', source: 'builtin', isLocal: true },
+    { value: 'yolov8n-seg', label: 'YOLOv8-nano-Seg', source: 'catalog', isLocal: false },
+    { value: 'yolov8s-seg', label: 'YOLOv8-small-Seg', source: 'catalog', isLocal: false },
+    { value: 'yolov8m-seg', label: 'YOLOv8-medium-Seg', source: 'catalog', isLocal: false },
+    { value: 'yolov8l-seg', label: 'YOLOv8-large-Seg', source: 'catalog', isLocal: false }
   ]
 };
 
@@ -471,13 +518,128 @@ function goToFirstUnannotated() {
   }
 }
 
+// 从后端拉取模型列表
+async function fetchModels() {
+  modelsLoading.value = true;
+  try {
+    const list = await visioFirmAPI.getModels();
+    apiModelsList.value = Array.isArray(list) ? list : [];
+  } catch (e) {
+    console.error('拉取模型列表失败:', e);
+    apiModelsList.value = [];
+  } finally {
+    modelsLoading.value = false;
+  }
+}
+
+async function onModelSelectOpen() {
+  await fetchModels();
+  refreshAvailableModels();
+}
+
+function refreshAvailableModels() {
+  const task = TOOL_TO_TASK[selectedTool.value];
+  if (apiModelsList.value.length > 0 && task) {
+    const filtered = apiModelsList.value.filter(m => (m.task || '').toLowerCase() === task);
+    availableModels.value = filtered.map(m => ({
+      value: m.id,
+      label: m.name,
+      isLocal: m.isLocal,
+      source: m.source
+    }));
+  } else {
+    availableModels.value = (modelsByTypeFallback[selectedTool.value] || []).map(m => ({
+      ...m,
+      isLocal: m.isLocal === true,
+      source: m.source || 'builtin'
+    }));
+  }
+  if (availableModels.value.length > 0 && !availableModels.value.some(m => m.value === selectedModel.value)) {
+    selectedModel.value = availableModels.value[0].value;
+  }
+}
+
 // 工具类型变更处理
 const handleToolChange = () => {
-  // 当工具类型改变时，更新可用模型列表
-  availableModels.value = modelsByType[selectedTool.value] || [];
-  // 默认选择第一个模型
-  selectedModel.value = availableModels.value.length > 0 ? availableModels.value[0].value : '';
+  refreshAvailableModels();
 };
+
+// 模型选择变更：所有模型都允许用户自行选择是否重新下载到本地
+async function handleModelChange(modelValue) {
+  const item = availableModels.value.find(m => m.value === modelValue);
+  if (!item) return;
+  try {
+    const action = await ElMessageBox.confirm(
+      '该模型支持按需下载到本地。\n\n点击「下载到本地」后将直接弹出保存路径选择。',
+      '模型加载方式',
+      {
+        confirmButtonText: '下载到本地',
+        cancelButtonText: '暂不下载',
+        type: 'info',
+        distinguishCancelAndClose: true
+      }
+    );
+    if (action !== 'confirm') return;
+    isDownloadingModel.value = true;
+    try {
+      await visioFirmAPI.saveModelFileAs(modelValue);
+      ElMessage.success('模型已重新下载并保存到您选择的路径');
+    } catch (saveErr) {
+      if (saveErr?.name === 'AbortError' || saveErr === 'cancel' || saveErr === 'close') {
+        ElMessage.info('已取消下载');
+        return;
+      }
+      ElMessage.warning(saveErr?.message || '下载或保存失败');
+    }
+    await fetchModels();
+    refreshAvailableModels();
+  } catch (e) {
+    if (e === 'cancel') {
+      ElMessage.info('已选择暂不下载');
+      return;
+    }
+    if (e !== 'cancel' && e !== 'close') ElMessage.error(e?.message || '下载失败');
+  } finally {
+    isDownloadingModel.value = false;
+  }
+}
+
+function showImportModelDialog() {
+  importModelForm.value = { file: null, name: '', task: TOOL_TO_TASK[selectedTool.value] || 'detection' };
+  importModelDialogVisible.value = true;
+}
+function onImportModelFileChange(file) {
+  importModelForm.value.file = file?.raw || file;
+}
+async function submitImportModel() {
+  if (!importModelForm.value.file) {
+    ElMessage.warning('请选择模型文件');
+    return;
+  }
+  if (!importModelForm.value.name?.trim()) {
+    ElMessage.warning('请填写模型名称');
+    return;
+  }
+  importModelUploading.value = true;
+  try {
+    const res = await visioFirmAPI.uploadModel(
+      importModelForm.value.file,
+      importModelForm.value.name.trim(),
+      importModelForm.value.task
+    );
+    if (res?.model?.id) {
+      ElMessage.success('模型导入成功');
+      importModelDialogVisible.value = false;
+      await fetchModels();
+      refreshAvailableModels();
+      selectedModel.value = res.model.id;
+    }
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '导入失败');
+  } finally {
+    importModelUploading.value = false;
+  }
+}
 
 // AI自动标注
 const autoAnnotate = async () => {
@@ -2599,9 +2761,10 @@ const handleBatchAnnotate = async (selectedIndices) => {
 
 
 // 在组件挂载时初始化
-onMounted(() => {
+onMounted(async () => {
   selectedTool.value = 'object_detection';
-  handleToolChange();
+  await fetchModels();
+  refreshAvailableModels();
   window.addEventListener('keydown', globalNavKeydown);
 });
 
