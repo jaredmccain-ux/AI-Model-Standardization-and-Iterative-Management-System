@@ -16,33 +16,14 @@ const api = axios.create({
   }
 });
 
-// 调试axios实例配置
-console.log('axios实例初始配置:', {
-  baseURL: api.defaults.baseURL,
-  timeout: api.defaults.timeout,
-  headers: api.defaults.headers
-});
-
 // 请求拦截器
 api.interceptors.request.use(
   config => {
     // 确保使用最新的API地址
     config.baseURL = getApiUrl()
-    
-    // 详细记录请求配置
-    console.log('=== 请求拦截器调试信息 ===')
-    console.log('请求方法:', config.method)
-    console.log('请求URL:', config.url)
-    console.log('请求baseURL:', config.baseURL)
-    console.log('完整请求URL:', config.baseURL + config.url)
-    console.log('请求headers:', config.headers)
-    console.log('请求数据:', config.data)
-    console.log('========================')
-    
     return config
   },
   error => {
-    console.error('请求错误:', error)
     return Promise.reject(error)
   }
 );
@@ -50,11 +31,9 @@ api.interceptors.request.use(
 // 响应拦截器
 api.interceptors.response.use(
   response => {
-    console.log('收到响应:', response.status, response.config.url)
     return response
   },
   error => {
-    console.error('响应错误:', error.response?.status, error.response?.data)
     return Promise.reject(error)
   }
 );

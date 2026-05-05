@@ -921,34 +921,11 @@ const confirmImportToProject = async () => {
   datasetImportLoading.value = true;
   try {
     const ensureStaging = async (list) => {
-      const need = list.filter(({ img }) => !(img?.remoteSource === 'staging' && img?.remoteName) && !!img?.file);
-      const batchSize = STAGING_UPLOAD_BATCH_SIZE;
-      for (let i = 0; i < need.length; i += batchSize) {
-        const chunk = need.slice(i, i + batchSize);
-        const files = chunk.map(({ img }) => img.file);
-        const resp = await uploadProjectStagingImages(currentProject.value.id, files);
-        const uploaded = Array.isArray(resp.data?.images) ? resp.data.images : [];
-        for (let j = 0; j < chunk.length; j++) {
-          const { index } = chunk[j];
-          const resItem = uploaded[j];
-          if (!resItem?.name || !resItem?.url_path) continue;
-          const fullUrl = `${getApiUrl()}${resItem.url_path}`;
-          const old = uploadedImages.value[index];
-          if (old?.url && typeof old.url === 'string' && old.url.startsWith('blob:')) {
-            try { URL.revokeObjectURL(old.url); } catch {}
-          }
-          uploadedImages.value[index] = {
-            ...old,
-            file: null,
-            isRemote: true,
-            remoteSource: 'staging',
-            remoteName: resItem.name,
-            url: fullUrl,
-            fullUrl,
-            split: old?.split || 'train',
-          };
-        }
-      }
+      const needIndices = list
+        .filter(({ img }) => !(img?.remoteSource === 'staging' && img?.remoteName) && !!img?.file)
+        .map(({ index }) => index);
+      if (needIndices.length === 0) return;
+      await uploadStagingIndicesBatched(currentProject.value.id, needIndices);
     };
 
     await ensureStaging(candidates);
@@ -1009,8 +986,9 @@ const projectDatasetLoading = ref(false);
 const remoteFileCache = ref(new Map());
 const stagingUploadQueue = ref([]);
 const stagingUploadingCount = ref(0);
-const STAGING_UPLOAD_CONCURRENCY = 6;
-const STAGING_UPLOAD_BATCH_SIZE = 3;
+const STAGING_UPLOAD_CONCURRENCY = 3;
+const STAGING_UPLOAD_TARGET_BYTES = 200 * 1024 * 1024;
+const STAGING_UPLOAD_MAX_FILES_PER_BATCH = 40;
 const STAGING_CHUNK_SIZE = 8 * 1024 * 1024;
 const STAGING_CHUNK_CONCURRENCY = 4;
 const STAGING_CHUNK_THRESHOLD = Number.POSITIVE_INFINITY;
@@ -1060,37 +1038,86 @@ async function uploadStagingBatch(projectId, indices) {
 
   batch.forEach(({ index }) => patchImage(index, { stagingStatus: 'uploading', stagingProgress: 0 }));
 
-  const files = batch.map(({ img }) => img.file);
-  const resp = await uploadProjectStagingImages(projectId, files);
-  const uploaded = Array.isArray(resp.data?.images) ? resp.data.images : [];
+  try {
+    const files = batch.map(({ img }) => img.file);
+    const resp = await uploadProjectStagingImages(projectId, files);
+    const uploaded = Array.isArray(resp.data?.images) ? resp.data.images : [];
 
-  for (let j = 0; j < batch.length; j++) {
-    const { index, img } = batch[j];
-    const resItem = uploaded[j];
-    if (!resItem?.name || !resItem?.url_path) {
-      patchImage(index, { stagingStatus: 'error' });
-      continue;
+    for (let j = 0; j < batch.length; j++) {
+      const { index, img } = batch[j];
+      const resItem = uploaded[j];
+      if (!resItem?.name || !resItem?.url_path) {
+        patchImage(index, { stagingStatus: 'error' });
+        continue;
+      }
+      const fullUrl = `${getApiUrl()}${resItem.url_path}`;
+      if (img?.url && typeof img.url === 'string' && img.url.startsWith('blob:')) {
+        try { URL.revokeObjectURL(img.url); } catch {}
+      }
+      patchImage(index, {
+        file: null,
+        isRemote: true,
+        remoteSource: 'staging',
+        remoteName: resItem.name,
+        url: fullUrl,
+        fullUrl,
+        split: img?.split || 'train',
+        stagingStatus: 'done',
+        stagingProgress: 100,
+        stagingUploadId: '',
+      });
+      if (datasetSplits.value[String(index)] == null) {
+        datasetSplits.value = { ...datasetSplits.value, [String(index)]: (img?.split || 'train') };
+      }
     }
-    const fullUrl = `${getApiUrl()}${resItem.url_path}`;
-    if (img?.url && typeof img.url === 'string' && img.url.startsWith('blob:')) {
-      try { URL.revokeObjectURL(img.url); } catch {}
+  } catch (e) {
+    if (batch.length > 1) {
+      const mid = Math.ceil(batch.length / 2);
+      const left = batch.slice(0, mid).map(x => x.index);
+      const right = batch.slice(mid).map(x => x.index);
+      await uploadStagingBatch(projectId, left);
+      await uploadStagingBatch(projectId, right);
+      return;
     }
-    patchImage(index, {
-      file: null,
-      isRemote: true,
-      remoteSource: 'staging',
-      remoteName: resItem.name,
-      url: fullUrl,
-      fullUrl,
-      split: img?.split || 'train',
-      stagingStatus: 'done',
-      stagingProgress: 100,
-      stagingUploadId: '',
-    });
-    if (datasetSplits.value[String(index)] == null) {
-      datasetSplits.value = { ...datasetSplits.value, [String(index)]: (img?.split || 'train') };
-    }
+    batch.forEach(({ index }) => patchImage(index, { stagingStatus: 'error' }));
+    throw e;
   }
+}
+
+function takeNextStagingBatchFromQueue(queue) {
+  const picked = [];
+  let totalBytes = 0;
+  const q = Array.isArray(queue) ? queue : [];
+  while (q.length > 0 && picked.length < STAGING_UPLOAD_MAX_FILES_PER_BATCH) {
+    const idx = q[0];
+    const img = uploadedImages.value[idx];
+    const file = img?.file;
+    const size = file instanceof File ? Number(file.size || 0) : 0;
+    if (picked.length > 0 && totalBytes + size > STAGING_UPLOAD_TARGET_BYTES) break;
+    q.shift();
+    picked.push(idx);
+    totalBytes += size;
+  }
+  return picked;
+}
+
+async function uploadStagingIndicesBatched(projectId, indices) {
+  const queue = (indices || [])
+    .filter((i) => i != null && i >= 0)
+    .filter((i) => {
+      const img = uploadedImages.value[i];
+      return !!img?.file && !(img?.remoteSource === 'staging' && img?.remoteName);
+    });
+  if (queue.length === 0) return;
+
+  const workers = Array.from({ length: Math.min(STAGING_UPLOAD_CONCURRENCY, queue.length) }, async () => {
+    while (queue.length > 0) {
+      const batch = takeNextStagingBatchFromQueue(queue);
+      if (batch.length === 0) return;
+      await uploadStagingBatch(projectId, batch);
+    }
+  });
+  await Promise.all(workers);
 }
 
 async function uploadStagingSingleChunked(projectId, index) {
@@ -1215,7 +1242,8 @@ async function pumpStagingUploads() {
   if (!currentProject.value?.id) return;
   const projectId = currentProject.value.id;
   while (stagingUploadingCount.value < STAGING_UPLOAD_CONCURRENCY && stagingUploadQueue.value.length > 0) {
-    const chunk = stagingUploadQueue.value.splice(0, STAGING_UPLOAD_BATCH_SIZE);
+    const chunk = takeNextStagingBatchFromQueue(stagingUploadQueue.value);
+    if (chunk.length === 0) return;
     stagingUploadingCount.value += 1;
     uploadStagingBatch(projectId, chunk)
       .catch(() => {})
