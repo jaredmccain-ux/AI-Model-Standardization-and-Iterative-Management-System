@@ -922,7 +922,7 @@ const confirmImportToProject = async () => {
   try {
     const ensureStaging = async (list) => {
       const need = list.filter(({ img }) => !(img?.remoteSource === 'staging' && img?.remoteName) && !!img?.file);
-      const batchSize = 10;
+      const batchSize = STAGING_UPLOAD_BATCH_SIZE;
       for (let i = 0; i < need.length; i += batchSize) {
         const chunk = need.slice(i, i + batchSize);
         const files = chunk.map(({ img }) => img.file);
@@ -1009,8 +1009,8 @@ const projectDatasetLoading = ref(false);
 const remoteFileCache = ref(new Map());
 const stagingUploadQueue = ref([]);
 const stagingUploadingCount = ref(0);
-const STAGING_UPLOAD_CONCURRENCY = 3;
-const STAGING_UPLOAD_BATCH_SIZE = 10;
+const STAGING_UPLOAD_CONCURRENCY = 4;
+const STAGING_UPLOAD_BATCH_SIZE = 3;
 
 async function uploadStagingBatch(indices) {
   currentProject.value = getCurrentProject();

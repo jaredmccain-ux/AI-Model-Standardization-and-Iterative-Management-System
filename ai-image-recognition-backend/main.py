@@ -18,6 +18,7 @@ from PIL import Image as PILImage
 import threading
 import time
 import torch
+import anyio
 from pydantic import BaseModel
 
 # 导入数据库设置
@@ -401,6 +402,7 @@ async def upload_project_staging_images(
     staging_dir = paths["staging_images"]
     do_overwrite = bool(int(overwrite or 0))
 
+    limiter = anyio.CapacityLimiter(4)
     stored = []
     for idx, upload in enumerate(images):
         original = os.path.basename(upload.filename or f"image_{idx}.jpg")
@@ -408,14 +410,19 @@ async def upload_project_staging_images(
         if not filename:
             continue
         out_path = os.path.join(staging_dir, filename)
-        try:
+
+        def _copy_to_disk() -> None:
             with open(out_path, "wb") as f:
-                shutil.copyfileobj(upload.file, f)
+                shutil.copyfileobj(upload.file, f, length=1024 * 1024)
+
+        try:
+            await anyio.to_thread.run_sync(_copy_to_disk, limiter=limiter)
         finally:
             try:
                 upload.file.close()
             except Exception:
                 pass
+
         stored.append({
             "name": filename,
             "url_path": f"/api/projects/{project_id}/staging/images/{filename}",
