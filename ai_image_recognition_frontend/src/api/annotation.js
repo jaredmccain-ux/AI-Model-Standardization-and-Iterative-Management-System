@@ -4,6 +4,9 @@
 import axios from 'axios';
 import { getApiUrl, TIMEOUT } from '@/config/api.js';
 
+const LONG_TIMEOUT = 10 * 60 * 1000;
+const UPLOAD_TIMEOUT = 30 * 60 * 1000;
+
 // 创建带有拦截器的axios实例
 const api = axios.create({
   baseURL: getApiUrl(),
@@ -74,6 +77,7 @@ export const annotateImage = async (image, tool, model, categories) => {
   formData.append('categories', JSON.stringify(categories));
   
   return api.post('/api/auto_annotate', formData, {
+    timeout: LONG_TIMEOUT,
     headers: {
       'Content-Type': 'multipart/form-data'
     }
@@ -87,6 +91,7 @@ export const uploadProjectStagingImages = async (projectId, images, { overwrite 
   });
   formData.append('overwrite', overwrite ? '1' : '0');
   return api.post(`/api/projects/${projectId}/staging/images`, formData, {
+    timeout: UPLOAD_TIMEOUT,
     headers: {
       'Content-Type': 'multipart/form-data'
     }
@@ -94,11 +99,11 @@ export const uploadProjectStagingImages = async (projectId, images, { overwrite 
 };
 
 export const annotateProjectFile = async (projectId, payload) => {
-  return api.post(`/api/projects/${projectId}/auto_annotate/file`, payload);
+  return api.post(`/api/projects/${projectId}/auto_annotate/file`, payload, { timeout: LONG_TIMEOUT });
 };
 
 export const importStagingToProjectDataset = async (projectId, payload) => {
-  return api.post(`/api/projects/${projectId}/dataset/from-staging`, payload);
+  return api.post(`/api/projects/${projectId}/dataset/from-staging`, payload, { timeout: LONG_TIMEOUT });
 };
 
 /**
@@ -127,6 +132,7 @@ export const importAnnotationsToProjectDataset = async ({
   }
 
   return api.post(`/api/projects/${projectId}/dataset/from-annotations`, formData, {
+    timeout: UPLOAD_TIMEOUT,
     headers: {
       'Content-Type': 'multipart/form-data'
     }
