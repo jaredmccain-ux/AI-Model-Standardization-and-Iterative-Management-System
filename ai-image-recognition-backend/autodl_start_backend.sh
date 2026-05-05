@@ -38,7 +38,7 @@ else
 fi
 
 cd "$CODE_DIR"
-nohup "$PY" -m uvicorn main:app --host "$HOST" --port "$PORT" --workers 1 >>"$LOG_FILE" 2>&1 &
+nohup "$PY" -m uvicorn main:app --host "$HOST" --port "$PORT" --workers 1 --loop uvloop --http httptools --backlog 2048 >>"$LOG_FILE" 2>&1 &
 
 if command -v curl >/dev/null 2>&1; then
   end_ts=$(( $(date +%s) + WAIT_SECONDS ))

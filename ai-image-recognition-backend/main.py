@@ -412,7 +412,7 @@ async def upload_project_staging_images(
     staging_dir = paths["staging_images"]
     do_overwrite = bool(int(overwrite or 0))
 
-    limiter = anyio.CapacityLimiter(4)
+    limiter = anyio.CapacityLimiter(8)
     stored = []
     for idx, upload in enumerate(images):
         original = os.path.basename(upload.filename or f"image_{idx}.jpg")
@@ -563,7 +563,7 @@ async def upload_project_staging_chunk(
     os.makedirs(chunks_dir, exist_ok=True)
     out_path = os.path.join(chunks_dir, f"{idx}.part")
 
-    limiter = anyio.CapacityLimiter(8)
+    limiter = anyio.CapacityLimiter(16)
 
     def _copy_to_disk() -> None:
         with open(out_path, "wb") as f:
