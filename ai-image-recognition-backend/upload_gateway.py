@@ -80,7 +80,9 @@ def _remote_write_file(remote_path: str, src_file) -> None:
             p.stdin.close()
         except Exception:
             pass
-        out, err = p.communicate()
+        p.wait()
+        out = p.stdout.read() if p.stdout is not None else b""
+        err = p.stderr.read() if p.stderr is not None else b""
     except Exception:
         try:
             p.kill()
@@ -158,4 +160,3 @@ async def upload_to_autodl_staging(
             }
         )
     return JSONResponse(content={"success": True, "count": len(stored), "images": stored})
-

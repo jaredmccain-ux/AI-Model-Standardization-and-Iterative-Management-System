@@ -1010,6 +1010,7 @@ const remoteFileCache = ref(new Map());
 const stagingUploadQueue = ref([]);
 const stagingUploadingCount = ref(0);
 const STAGING_UPLOAD_CONCURRENCY = 6;
+const STAGING_UPLOAD_BATCH_SIZE = 3;
 const STAGING_CHUNK_SIZE = 8 * 1024 * 1024;
 const STAGING_CHUNK_CONCURRENCY = 4;
 const STAGING_CHUNK_THRESHOLD = Number.POSITIVE_INFINITY;
@@ -1048,6 +1049,47 @@ async function uploadStagingSingleMultipart(projectId, index) {
   });
   if (datasetSplits.value[String(index)] == null) {
     datasetSplits.value = { ...datasetSplits.value, [String(index)]: (img?.split || 'train') };
+  }
+}
+
+async function uploadStagingBatch(projectId, indices) {
+  const batch = (indices || [])
+    .map((i) => ({ index: i, img: uploadedImages.value[i] }))
+    .filter(({ img }) => !!img?.file && !(img?.remoteSource === 'staging' && img?.remoteName));
+  if (batch.length === 0) return;
+
+  batch.forEach(({ index }) => patchImage(index, { stagingStatus: 'uploading', stagingProgress: 0 }));
+
+  const files = batch.map(({ img }) => img.file);
+  const resp = await uploadProjectStagingImages(projectId, files);
+  const uploaded = Array.isArray(resp.data?.images) ? resp.data.images : [];
+
+  for (let j = 0; j < batch.length; j++) {
+    const { index, img } = batch[j];
+    const resItem = uploaded[j];
+    if (!resItem?.name || !resItem?.url_path) {
+      patchImage(index, { stagingStatus: 'error' });
+      continue;
+    }
+    const fullUrl = `${getApiUrl()}${resItem.url_path}`;
+    if (img?.url && typeof img.url === 'string' && img.url.startsWith('blob:')) {
+      try { URL.revokeObjectURL(img.url); } catch {}
+    }
+    patchImage(index, {
+      file: null,
+      isRemote: true,
+      remoteSource: 'staging',
+      remoteName: resItem.name,
+      url: fullUrl,
+      fullUrl,
+      split: img?.split || 'train',
+      stagingStatus: 'done',
+      stagingProgress: 100,
+      stagingUploadId: '',
+    });
+    if (datasetSplits.value[String(index)] == null) {
+      datasetSplits.value = { ...datasetSplits.value, [String(index)]: (img?.split || 'train') };
+    }
   }
 }
 
@@ -1171,10 +1213,11 @@ async function pumpStagingUploads() {
   if (stagingUploadingCount.value >= STAGING_UPLOAD_CONCURRENCY) return;
   currentProject.value = getCurrentProject();
   if (!currentProject.value?.id) return;
+  const projectId = currentProject.value.id;
   while (stagingUploadingCount.value < STAGING_UPLOAD_CONCURRENCY && stagingUploadQueue.value.length > 0) {
-    const idx = stagingUploadQueue.value.shift();
+    const chunk = stagingUploadQueue.value.splice(0, STAGING_UPLOAD_BATCH_SIZE);
     stagingUploadingCount.value += 1;
-    uploadStagingIndex(idx)
+    uploadStagingBatch(projectId, chunk)
       .catch(() => {})
       .finally(() => {
         stagingUploadingCount.value -= 1;
