@@ -660,7 +660,7 @@
         <el-table-column label="划分" width="160">
           <template #default="{ row }">
             <el-select
-              v-model="datasetSplits[row.uploadName]"
+              v-model="datasetSplits[row.splitKey]"
               size="small"
               style="width: 120px;"
               :disabled="!currentProject || datasetSplitMode === 'auto'"
@@ -697,7 +697,7 @@ defineOptions({ name: 'ImageAnnotation' });
 import { ref, computed, watch, onMounted, onActivated, onUnmounted, nextTick } from 'vue';
 import { ElMessage, ElMessageBox, ElUpload, ElButton, ElSelect, ElOption, ElCheckboxGroup, ElCheckbox, ElInput, ElForm, ElFormItem, ElDialog, ElRadioGroup, ElRadio, ElBadge, ElAlert, ElDivider, ElTable, ElTableColumn, ElTag, ElSlider, ElInputNumber } from 'element-plus';
 import { Plus, Document, Upload } from '@element-plus/icons-vue';
-import { annotateImage, exportAnnotationData, saveSingleAnnotation, saveBatchAnnotations, deleteAnnotation, getImageAnnotations, importAnnotationsToProjectDataset, getProjectDatasetState } from '@/api/annotation.js';
+import { annotateImage, annotateProjectFile, uploadProjectStagingImages, importStagingToProjectDataset, exportAnnotationData, saveSingleAnnotation, saveBatchAnnotations, deleteAnnotation, getImageAnnotations, importAnnotationsToProjectDataset, getProjectDatasetState } from '@/api/annotation.js';
 import { runAugmentation as runAugmentationAPI } from '@/api/augmentation.js';
 import { getUserConfig, saveUserConfig } from '@/utils/configManager.js';
 import { visioFirmAPI } from '@/api/visioFirm.js';
@@ -771,14 +771,23 @@ const datasetSplits = ref({});
 const datasetImportLoading = ref(false);
 
 const datasetImportItems = computed(() => {
-  const list = uploadedImages.value
-    .map((img, index) => ({ img, index }))
-    .filter(({ img }) => !!img?.file);
+  const indices = Array.isArray(datasetLocalIndices.value) && datasetLocalIndices.value.length > 0
+    ? datasetLocalIndices.value
+    : uploadedImages.value
+      .map((img, index) => ({ img, index }))
+      .filter(({ img }) => !!img?.file || (img?.remoteSource === 'staging' && !!img?.remoteName))
+      .map(e => e.index);
+
+  const list = indices
+    .map((index) => ({ img: uploadedImages.value[index], index }))
+    .filter(({ img }) => !!img);
+
   return list.map(({ img, index }, pos) => {
-    const uploadName = datasetUploadNames.value[pos] || img.name;
+    const uploadName = String(img.remoteName || datasetUploadNames.value[pos] || img.name);
     const anns = savedAnnotations.value[index] || imageAnnotations.value[index] || [];
     return {
       index,
+      splitKey: String(index),
       name: img.name,
       url: img.url,
       uploadName,
@@ -790,7 +799,7 @@ const datasetImportItems = computed(() => {
 const datasetSplitStats = computed(() => {
   const stats = { train: 0, val: 0 };
   for (const item of datasetImportItems.value) {
-    const split = datasetSplits.value[item.uploadName] || 'train';
+    const split = datasetSplits.value[item.splitKey] || 'train';
     if (split === 'val') stats.val += 1;
     else stats.train += 1;
   }
@@ -829,26 +838,29 @@ function buildUniqueUploadNames(images) {
 }
 
 const applyAutoSplit = () => {
-  const localImages = uploadedImages.value.filter(img => !!img?.file);
-  const n = localImages.length;
-  const names = datasetUploadNames.value.length === n ? datasetUploadNames.value : buildUniqueUploadNames(localImages);
+  const indices = Array.isArray(datasetLocalIndices.value) ? datasetLocalIndices.value : [];
+  const imgs = indices.map(i => uploadedImages.value[i]).filter(Boolean);
+  const n = imgs.length;
+  const baseNames = imgs.map(img => String(img?.remoteName || img?.name || 'image.jpg'));
+  const names = datasetUploadNames.value.length === n ? datasetUploadNames.value : buildUniqueUploadNames(baseNames.map(name => ({ name })));
   datasetUploadNames.value = names;
 
   const rng = mulberry32(Number(datasetRandomSeed.value) || 42);
-  const indices = Array.from({ length: n }, (_, i) => i);
-  for (let i = indices.length - 1; i > 0; i--) {
+  const shuffled = Array.from({ length: n }, (_, i) => i);
+  for (let i = shuffled.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
-    [indices[i], indices[j]] = [indices[j], indices[i]];
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
   }
 
   const nVal = Math.max(0, Math.min(n, Math.round(n * Number(datasetValRatio.value || 0.2))));
   const splitMap = {};
-  for (let i = 0; i < n; i++) {
-    splitMap[names[i]] = 'train';
+  for (const idx of indices) {
+    splitMap[String(idx)] = 'train';
   }
   for (let k = 0; k < nVal; k++) {
-    const idx = indices[k];
-    splitMap[names[idx]] = 'val';
+    const pos = shuffled[k];
+    const realIndex = indices[pos];
+    splitMap[String(realIndex)] = 'val';
   }
   datasetSplits.value = splitMap;
 };
@@ -857,15 +869,15 @@ const openDatasetImportDialog = () => {
   currentProject.value = getCurrentProject();
   const entries = uploadedImages.value
     .map((img, index) => ({ img, index }))
-    .filter(({ img }) => !!img?.file);
+    .filter(({ img }) => !!img?.file || (img?.remoteSource === 'staging' && !!img?.remoteName));
   datasetLocalIndices.value = entries.map(e => e.index);
-  datasetUploadNames.value = buildUniqueUploadNames(entries.map(e => e.img));
+  datasetUploadNames.value = entries.map(e => String(e.img?.remoteName || e.img?.name || 'image.jpg'));
   if (datasetSplitMode.value === 'auto') {
     applyAutoSplit();
   } else {
     const splitMap = {};
-    for (const name of datasetUploadNames.value) {
-      splitMap[name] = datasetSplits.value[name] || 'train';
+    for (const idx of datasetLocalIndices.value) {
+      splitMap[String(idx)] = datasetSplits.value[String(idx)] || 'train';
     }
     datasetSplits.value = splitMap;
   }
@@ -884,56 +896,84 @@ const confirmImportToProject = async () => {
     ElMessage.warning('请先在首页创建/选择项目');
     return;
   }
-  const localImages = uploadedImages.value.filter(img => !!img?.file);
-  if (localImages.length === 0) {
-    ElMessage.warning('请先在标注页上传图片（当前仅导入本地会话图片）');
+  const indices = Array.isArray(datasetLocalIndices.value) ? datasetLocalIndices.value : [];
+  const candidates = indices.map(i => ({ img: uploadedImages.value[i], index: i })).filter(x => x.img);
+  if (candidates.length === 0) {
+    ElMessage.warning('请先上传图片或上传到暂存区后再导入');
     return;
   }
 
   datasetImportLoading.value = true;
   try {
-    const uploadNames = datasetUploadNames.value.length === localImages.length
-      ? datasetUploadNames.value
-      : buildUniqueUploadNames(localImages);
-
-    const imagesToUpload = localImages.map((img, index) => {
-      const f = img.file;
-      const targetName = uploadNames[index] || img.name;
-      if (f instanceof File) {
-        return new File([f], targetName, { type: f.type || 'image/jpeg' });
+    const ensureStaging = async (list) => {
+      const need = list.filter(({ img }) => !(img?.remoteSource === 'staging' && img?.remoteName) && !!img?.file);
+      const batchSize = 10;
+      for (let i = 0; i < need.length; i += batchSize) {
+        const chunk = need.slice(i, i + batchSize);
+        const files = chunk.map(({ img }) => img.file);
+        const resp = await uploadProjectStagingImages(currentProject.value.id, files);
+        const uploaded = Array.isArray(resp.data?.images) ? resp.data.images : [];
+        for (let j = 0; j < chunk.length; j++) {
+          const { index } = chunk[j];
+          const resItem = uploaded[j];
+          if (!resItem?.name || !resItem?.url_path) continue;
+          const fullUrl = `${getApiUrl()}${resItem.url_path}`;
+          const old = uploadedImages.value[index];
+          if (old?.url && typeof old.url === 'string' && old.url.startsWith('blob:')) {
+            try { URL.revokeObjectURL(old.url); } catch {}
+          }
+          uploadedImages.value[index] = {
+            ...old,
+            file: null,
+            isRemote: true,
+            remoteSource: 'staging',
+            remoteName: resItem.name,
+            url: fullUrl,
+            fullUrl,
+            split: old?.split || 'train',
+          };
+        }
       }
-      return f;
-    });
+    };
 
-    const annotationsByFilename = {};
+    await ensureStaging(candidates);
+
+    const staged = candidates
+      .map(({ img, index }) => ({ img: uploadedImages.value[index], index }))
+      .filter(({ img }) => img?.remoteSource === 'staging' && !!img?.remoteName);
+
     const categorySet = new Set();
-    localImages.forEach((img, index) => {
-      const filename = uploadNames[index] || img.name;
-      const anns = savedAnnotations.value[index] || imageAnnotations.value[index] || [];
-      const safeAnns = Array.isArray(anns) ? anns : [];
-      annotationsByFilename[filename] = safeAnns;
-      for (const ann of safeAnns) {
-        const label = String(ann?.label || '').trim();
-        if (label) categorySet.add(label);
+    const chunkSize = 200;
+    let totalImages = 0;
+    let totalBboxes = 0;
+    for (let i = 0; i < staged.length; i += chunkSize) {
+      const chunk = staged.slice(i, i + chunkSize);
+      const items = [];
+      const annotationsByFilename = {};
+      for (const { img, index } of chunk) {
+        const filename = img.remoteName;
+        const anns = savedAnnotations.value[index] || imageAnnotations.value[index] || [];
+        const safeAnns = Array.isArray(anns) ? anns : [];
+        annotationsByFilename[filename] = safeAnns;
+        for (const ann of safeAnns) {
+          const label = String(ann?.label || '').trim();
+          if (label) categorySet.add(label);
+        }
+        const split = (datasetSplits.value[String(index)] || img.split || 'train') === 'val' ? 'val' : 'train';
+        items.push({ filename, split });
       }
-    });
 
-    const splitsByFilename = {};
-    for (const name of uploadNames) {
-      const split = (datasetSplits.value[name] || 'train') === 'val' ? 'val' : 'train';
-      splitsByFilename[name] = split;
+      const resp = await importStagingToProjectDataset(currentProject.value.id, {
+        items,
+        annotations_by_filename: annotationsByFilename,
+        categories: Array.from(categorySet),
+        move: true,
+      });
+      totalImages += Number(resp.data?.image_count || 0);
+      totalBboxes += Number(resp.data?.bbox_count || 0);
     }
 
-    const resp = await importAnnotationsToProjectDataset({
-      projectId: currentProject.value.id,
-      images: imagesToUpload,
-      annotationsByFilename,
-      categories: Array.from(categorySet),
-      valRatio: Number(datasetValRatio.value || 0.2),
-      splitsByFilename,
-    });
-
-    ElMessage.success(`导入成功：${resp.data.image_count} 张图片，${resp.data.bbox_count} 个标注，${resp.data.class_count} 个类别`);
+    ElMessage.success(`导入成功：${totalImages} 张图片，${totalBboxes} 个标注`);
     datasetImportDialogVisible.value = false;
     uploadedImages.value = [];
     imageAnnotations.value = {};
@@ -952,6 +992,79 @@ const confirmImportToProject = async () => {
 
 const projectDatasetLoading = ref(false);
 const remoteFileCache = ref(new Map());
+const stagingUploadQueue = ref([]);
+const stagingUploadingCount = ref(0);
+const STAGING_UPLOAD_CONCURRENCY = 3;
+const STAGING_UPLOAD_BATCH_SIZE = 10;
+
+async function uploadStagingBatch(indices) {
+  currentProject.value = getCurrentProject();
+  if (!currentProject.value?.id) return;
+  const projectId = currentProject.value.id;
+  const batch = indices
+    .map(i => ({ img: uploadedImages.value[i], index: i }))
+    .filter(({ img }) => !!img?.file && !(img?.remoteSource === 'staging' && !!img?.remoteName));
+  if (batch.length === 0) return;
+
+  batch.forEach(({ index }) => {
+    const old = uploadedImages.value[index];
+    uploadedImages.value[index] = { ...old, stagingStatus: 'uploading' };
+  });
+
+  const files = batch.map(({ img }) => img.file);
+  const resp = await uploadProjectStagingImages(projectId, files);
+  const uploaded = Array.isArray(resp.data?.images) ? resp.data.images : [];
+  for (let j = 0; j < batch.length; j++) {
+    const { index } = batch[j];
+    const resItem = uploaded[j];
+    const old = uploadedImages.value[index];
+    if (!resItem?.name || !resItem?.url_path) {
+      uploadedImages.value[index] = { ...old, stagingStatus: 'error' };
+      continue;
+    }
+    const fullUrl = `${getApiUrl()}${resItem.url_path}`;
+    if (old?.url && typeof old.url === 'string' && old.url.startsWith('blob:')) {
+      try { URL.revokeObjectURL(old.url); } catch {}
+    }
+    uploadedImages.value[index] = {
+      ...old,
+      file: null,
+      isRemote: true,
+      remoteSource: 'staging',
+      remoteName: resItem.name,
+      url: fullUrl,
+      fullUrl,
+      split: old?.split || 'train',
+      stagingStatus: 'done',
+    };
+    if (datasetSplits.value[String(index)] == null) {
+      datasetSplits.value = { ...datasetSplits.value, [String(index)]: (old?.split || 'train') };
+    }
+  }
+}
+
+async function pumpStagingUploads() {
+  if (stagingUploadingCount.value >= STAGING_UPLOAD_CONCURRENCY) return;
+  currentProject.value = getCurrentProject();
+  if (!currentProject.value?.id) return;
+  while (stagingUploadingCount.value < STAGING_UPLOAD_CONCURRENCY && stagingUploadQueue.value.length > 0) {
+    const indices = stagingUploadQueue.value.splice(0, STAGING_UPLOAD_BATCH_SIZE);
+    stagingUploadingCount.value += 1;
+    uploadStagingBatch(indices)
+      .catch(() => {})
+      .finally(() => {
+        stagingUploadingCount.value -= 1;
+        pumpStagingUploads();
+      });
+  }
+}
+
+function enqueueStagingUpload(index) {
+  if (index == null || index < 0) return;
+  if (stagingUploadQueue.value.includes(index)) return;
+  stagingUploadQueue.value.push(index);
+  pumpStagingUploads();
+}
 
 async function refreshProjectDatasetState({ force = false } = {}) {
   currentProject.value = getCurrentProject();
@@ -973,10 +1086,12 @@ async function refreshProjectDatasetState({ force = false } = {}) {
       return {
         file: null,
         name: it.name,
+        remoteName: it.name,
         url: thumb,
         fullUrl,
         split: it.split,
         isRemote: true,
+        remoteSource: 'dataset',
         selected: false,
       };
     });
@@ -1736,8 +1851,13 @@ async function submitImportModel() {
 
 // AI自动标注
 const autoAnnotate = async () => {
-  if (!currentImageFile.value) {
+  const img = currentImage.value;
+  if (!img) {
     ElMessage.warning('请先选择一张图片');
+    return;
+  }
+  if (!img?.remoteSource && !currentImageFile.value) {
+    ElMessage.warning('当前图片未就绪，请稍候或重新选择图片');
     return;
   }
   
@@ -1751,13 +1871,53 @@ const autoAnnotate = async () => {
   try {
     ElMessage.info('正在分析图片，请稍候...');
     
-    // 调用API服务
-    const response = await annotateImage(
-      currentImageFile.value, 
-      selectedTool.value, 
-      selectedModel.value,
-      categories.value
-    );
+    currentProject.value = getCurrentProject();
+    let response = null;
+    if (currentProject.value?.id) {
+      const projectId = currentProject.value.id;
+      const source = img?.remoteSource;
+      const filename = img?.remoteName;
+      if (source && filename) {
+        response = await annotateProjectFile(projectId, {
+          source,
+          filename,
+          split: img?.split || null,
+          tool: selectedTool.value,
+          model: selectedModel.value,
+          return_annotated_image: 0,
+        });
+      } else if (currentImageIndex.value >= 0 && currentImageFile.value) {
+        await uploadStagingBatch([currentImageIndex.value]);
+        const updated = uploadedImages.value[currentImageIndex.value];
+        if (updated?.remoteSource && updated?.remoteName) {
+          response = await annotateProjectFile(projectId, {
+            source: updated.remoteSource,
+            filename: updated.remoteName,
+            split: updated?.split || null,
+            tool: selectedTool.value,
+            model: selectedModel.value,
+            return_annotated_image: 0,
+          });
+        } else {
+          response = await annotateImage(
+            currentImageFile.value,
+            selectedTool.value,
+            selectedModel.value,
+            categories.value
+          );
+        }
+      }
+    } else if (currentImageFile.value) {
+      response = await annotateImage(
+        currentImageFile.value,
+        selectedTool.value,
+        selectedModel.value,
+        categories.value
+      );
+    }
+    if (!response) {
+      throw new Error('标注请求未发出（缺少项目或图片文件）');
+    }
     
     if (response.data && response.data.annotations && response.data.annotations.length > 0) {
       const annotations = response.data.annotations;
@@ -2136,7 +2296,13 @@ const handleFileChange = async (file) => {
   uploadedImages.value.push({
     file: file.raw,
     name: file.name,
-    url: fileURL
+    url: fileURL,
+    fullUrl: '',
+    isRemote: false,
+    remoteSource: '',
+    remoteName: '',
+    split: 'train',
+    stagingStatus: 'pending',
   });
   
   // 初始化该图片的标注数组
@@ -2151,6 +2317,11 @@ const handleFileChange = async (file) => {
   }
   
   ElMessage.success(`成功上传图片: ${file.name}`);
+
+  currentProject.value = getCurrentProject();
+  if (currentProject.value?.id) {
+    enqueueStagingUpload(newIndex);
+  }
 };
 
 // 标注文件导入处理

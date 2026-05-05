@@ -114,6 +114,8 @@ def _ensure_project_dirs(project_id: str) -> Dict[str, str]:
         "labels_train": os.path.join(base, "data", "labels", "train"),
         "labels_val": os.path.join(base, "data", "labels", "val"),
         "annotations": os.path.join(base, "annotations"),
+        "staging": os.path.join(base, "staging"),
+        "staging_images": os.path.join(base, "staging", "images"),
         "training": os.path.join(base, "training"),
         "evaluation": os.path.join(base, "evaluation"),
     }
@@ -336,6 +338,253 @@ async def create_dataset_from_annotations(
     except Exception:
         pass
     merged_annotations.update(ann_map)
+    with open(session_path, "w", encoding="utf-8") as f:
+        json.dump({"annotations": merged_annotations, "categories": category_list}, f, ensure_ascii=False, indent=2)
+
+    meta = _read_project_meta(project_id)
+    meta["dataset_yaml_path"] = dataset_yaml_path
+    meta["updated_at"] = datetime.utcnow().isoformat()
+    _write_project_meta(project_id, meta)
+
+    return JSONResponse(content={
+        "success": True,
+        "project_id": project_id,
+        "dataset_yaml_path": dataset_yaml_path,
+        "image_count": image_count,
+        "bbox_count": bbox_count,
+        "class_count": len(category_list),
+        "categories": category_list,
+    })
+
+class ProjectAutoAnnotateFileRequest(BaseModel):
+    source: str = "staging"  # staging | dataset
+    filename: str
+    split: Optional[str] = None  # train | val（source=dataset 时可选）
+    tool: str = "object_detection"
+    model: Optional[str] = None
+    return_annotated_image: int = 0
+
+class ImportFromStagingItem(BaseModel):
+    filename: str
+    split: str = "train"
+
+class ImportFromStagingRequest(BaseModel):
+    items: List[ImportFromStagingItem]
+    annotations_by_filename: Dict[str, Any] = {}
+    categories: Optional[List[str]] = None
+    move: bool = True
+
+def _unique_filename(dir_path: str, filename: str) -> str:
+    filename = os.path.basename(filename or "")
+    if not filename:
+        return ""
+    base, ext = os.path.splitext(filename)
+    if not ext:
+        ext = ".jpg"
+    candidate = f"{base}{ext}"
+    if not os.path.exists(os.path.join(dir_path, candidate)):
+        return candidate
+    for i in range(1, 1000000):
+        candidate = f"{base}_{i}{ext}"
+        if not os.path.exists(os.path.join(dir_path, candidate)):
+            return candidate
+    return f"{base}_{uuid.uuid4().hex}{ext}"
+
+@app.post("/api/projects/{project_id}/staging/images")
+async def upload_project_staging_images(
+    project_id: str,
+    images: List[UploadFile] = File(...),
+    overwrite: int = Form(0),
+):
+    project_id = _require_safe_project_id(project_id)
+    paths = _ensure_project_dirs(project_id)
+    staging_dir = paths["staging_images"]
+    do_overwrite = bool(int(overwrite or 0))
+
+    stored = []
+    for idx, upload in enumerate(images):
+        original = os.path.basename(upload.filename or f"image_{idx}.jpg")
+        filename = original if do_overwrite else _unique_filename(staging_dir, original)
+        if not filename:
+            continue
+        out_path = os.path.join(staging_dir, filename)
+        try:
+            with open(out_path, "wb") as f:
+                shutil.copyfileobj(upload.file, f)
+        finally:
+            try:
+                upload.file.close()
+            except Exception:
+                pass
+        stored.append({
+            "name": filename,
+            "url_path": f"/api/projects/{project_id}/staging/images/{filename}",
+        })
+    return JSONResponse(content={"success": True, "count": len(stored), "images": stored})
+
+@app.get("/api/projects/{project_id}/staging/images/{filename}")
+async def get_project_staging_image(project_id: str, filename: str):
+    project_id = _require_safe_project_id(project_id)
+    filename = os.path.basename(filename or "")
+    if not filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    paths = _ensure_project_dirs(project_id)
+    img_path = _safe_join(paths["staging_images"], filename)
+    if not os.path.exists(img_path):
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(img_path)
+
+@app.post("/api/projects/{project_id}/auto_annotate/file")
+async def auto_annotate_project_file(req: ProjectAutoAnnotateFileRequest, project_id: str):
+    project_id = _require_safe_project_id(project_id)
+    paths = _ensure_project_dirs(project_id)
+    filename = os.path.basename(req.filename or "")
+    if not filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    tool = (req.tool or "").strip()
+    if tool not in ("object_detection", "image_classification", "image_segmentation"):
+        raise HTTPException(status_code=400, detail=f"Tool type '{tool}' is not supported.")
+
+    file_path = None
+    source = (req.source or "staging").lower().strip()
+    if source == "staging":
+        p = _safe_join(paths["staging_images"], filename)
+        if os.path.exists(p):
+            file_path = p
+    elif source == "dataset":
+        split = (req.split or "").lower().strip()
+        candidates = []
+        if split in ("train", "val"):
+            candidates.append(_safe_join(paths["data"], "images", split, filename))
+        else:
+            candidates.append(_safe_join(paths["data"], "images", "train", filename))
+            candidates.append(_safe_join(paths["data"], "images", "val", filename))
+        for p in candidates:
+            if os.path.exists(p):
+                file_path = p
+                break
+    else:
+        raise HTTPException(status_code=400, detail="Invalid source")
+
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    annotations = []
+    annotated_image_base64 = None
+    if tool == "object_detection":
+        with open(file_path, "rb") as f:
+            image_bytes = f.read()
+        include_image = bool(int(req.return_annotated_image or 0))
+        annotations, annotated_image_base64 = ai_service.detect_objects_with_visualization(
+            image_bytes,
+            model_name=req.model or "YOLO",
+            include_image=include_image,
+        )
+    elif tool == "image_classification":
+        annotations = ai_service.classify_image(file_path, model_name=req.model)
+    elif tool == "image_segmentation":
+        annotations = ai_service.segment_objects(file_path, model_name=req.model)
+
+    return JSONResponse(content={
+        "annotations": annotations,
+        "annotated_image": annotated_image_base64,
+        "source": source,
+        "filename": filename,
+    })
+
+@app.post("/api/projects/{project_id}/dataset/from-staging")
+async def import_dataset_from_staging(project_id: str, req: ImportFromStagingRequest):
+    project_id = _require_safe_project_id(project_id)
+    paths = _ensure_project_dirs(project_id)
+
+    dataset = _load_or_init_dataset_yaml(project_id)
+    dataset_yaml_path = dataset["dataset_yaml_path"]
+    category_list: List[str] = list(dataset.get("names") or [])
+    if req.categories:
+        for x in req.categories:
+            s = str(x).strip()
+            if s and s not in category_list:
+                category_list.append(s)
+
+    image_count = 0
+    bbox_count = 0
+
+    for it in req.items:
+        filename = os.path.basename(it.filename or "")
+        if not filename:
+            continue
+        split = (it.split or "train").lower().strip()
+        split = "val" if split in ("val", "valid", "validation", "test", "testing") else "train"
+
+        src_path = _safe_join(paths["staging_images"], filename)
+        if not os.path.exists(src_path):
+            continue
+
+        img_dir = paths["images_val"] if split == "val" else paths["images_train"]
+        lbl_dir = paths["labels_val"] if split == "val" else paths["labels_train"]
+        dst_path = os.path.join(img_dir, filename)
+
+        if os.path.exists(dst_path):
+            if req.move:
+                try:
+                    os.remove(src_path)
+                except Exception:
+                    pass
+        else:
+            if req.move:
+                os.replace(src_path, dst_path)
+            else:
+                shutil.copy2(src_path, dst_path)
+
+        anns = (req.annotations_by_filename or {}).get(filename, [])
+        label_path = os.path.join(lbl_dir, Path(filename).with_suffix(".txt").name)
+        lines: List[str] = []
+        if isinstance(anns, list):
+            for ann in anns:
+                if not isinstance(ann, dict):
+                    continue
+                if ann.get("type") not in ("bbox", "bounding_box", "obb"):
+                    continue
+                bbox = ann.get("bbox") or {}
+                try:
+                    x = float(bbox.get("x", 0))
+                    y = float(bbox.get("y", 0))
+                    w = float(bbox.get("width", 0))
+                    h = float(bbox.get("height", 0))
+                except Exception:
+                    continue
+                label = (ann.get("label") or "unknown").strip() or "unknown"
+                cls_id = _ensure_name_index(category_list, label)
+                cx = _clamp01((x + w / 2.0) / 100.0)
+                cy = _clamp01((y + h / 2.0) / 100.0)
+                bw = _clamp01(w / 100.0)
+                bh = _clamp01(h / 100.0)
+                lines.append(f"{cls_id} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
+                bbox_count += 1
+        with open(label_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+        image_count += 1
+
+    _write_dataset_yaml(paths["data"], category_list, dataset_yaml_path)
+
+    session_path = os.path.join(paths["annotations"], "session_annotations.json")
+    try:
+        if os.path.exists(session_path):
+            with open(session_path, "r", encoding="utf-8") as f:
+                prev = json.load(f) or {}
+        else:
+            prev = {}
+    except Exception:
+        prev = {}
+    merged_annotations = {}
+    try:
+        if isinstance(prev.get("annotations"), dict):
+            merged_annotations.update(prev.get("annotations"))
+    except Exception:
+        pass
+    if isinstance(req.annotations_by_filename, dict):
+        merged_annotations.update(req.annotations_by_filename)
     with open(session_path, "w", encoding="utf-8") as f:
         json.dump({"annotations": merged_annotations, "categories": category_list}, f, ensure_ascii=False, indent=2)
 

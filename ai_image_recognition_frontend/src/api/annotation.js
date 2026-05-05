@@ -80,6 +80,27 @@ export const annotateImage = async (image, tool, model, categories) => {
   });
 };
 
+export const uploadProjectStagingImages = async (projectId, images, { overwrite = false } = {}) => {
+  const formData = new FormData();
+  (images || []).forEach((file) => {
+    formData.append('images', file);
+  });
+  formData.append('overwrite', overwrite ? '1' : '0');
+  return api.post(`/api/projects/${projectId}/staging/images`, formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    }
+  });
+};
+
+export const annotateProjectFile = async (projectId, payload) => {
+  return api.post(`/api/projects/${projectId}/auto_annotate/file`, payload);
+};
+
+export const importStagingToProjectDataset = async (projectId, payload) => {
+  return api.post(`/api/projects/${projectId}/dataset/from-staging`, payload);
+};
+
 /**
  * 将“标注页面当前会话”的图片与标注结果导入到某个项目的数据集目录中（生成 images/train|val 与 labels/train|val + dataset.yaml）
  * 后端接口：POST /api/projects/{projectId}/dataset/from-annotations
