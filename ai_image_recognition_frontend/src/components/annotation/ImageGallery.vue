@@ -9,6 +9,12 @@
           <el-option label="未标注" value="unannotated"></el-option>
         </el-select>
       </div>
+      <div v-if="uploadSummary.total > 0" class="upload-summary">
+        <span class="upload-summary-item">就绪 {{ uploadSummary.ready }}/{{ uploadSummary.total }}</span>
+        <span class="upload-summary-item">上传中 {{ uploadSummary.uploading }}</span>
+        <span class="upload-summary-item">待上传 {{ uploadSummary.pending }}</span>
+        <span class="upload-summary-item upload-summary-item-error" v-if="uploadSummary.error > 0">失败 {{ uploadSummary.error }}</span>
+      </div>
       <div class="selection-controls" v-if="images.length > 0">
         <el-checkbox v-model="selectAll" @change="handleSelectAll">全选</el-checkbox>
         <el-button 
@@ -57,6 +63,11 @@
           <el-checkbox v-model="item.image.selected" @change="updateSelection(item.index)"></el-checkbox>
         </div>
         <img :src="item.image.url" :alt="item.image.name" />
+        <div class="upload-badge" v-if="getUploadState(item.image).show">
+          <span class="upload-pill" :class="getUploadState(item.image).cls">
+            {{ getUploadState(item.image).text }}
+          </span>
+        </div>
         <div class="image-overlay">
           <span class="image-name">{{ item.image.name }}</span>
           <el-button
@@ -116,6 +127,37 @@ function getStats(index) {
 
 const annotatedCount = computed(() => {
   return (props.annotationStats || []).filter(s => s && (s.count || 0) > 0).length;
+});
+
+function getUploadState(image) {
+  const remoteSource = image?.remoteSource || '';
+  const stagingStatus = image?.stagingStatus || '';
+  if (remoteSource === 'dataset') return { show: true, text: '已入库', cls: 'pill-dataset' };
+  if (remoteSource === 'staging') {
+    if (stagingStatus === 'error') return { show: true, text: '上传失败', cls: 'pill-error' };
+    if (stagingStatus === 'uploading') return { show: true, text: '上传中', cls: 'pill-uploading' };
+    return { show: true, text: '已就绪', cls: 'pill-ready' };
+  }
+  if (image?.file) {
+    if (stagingStatus === 'error') return { show: true, text: '上传失败', cls: 'pill-error' };
+    if (stagingStatus === 'uploading') return { show: true, text: '上传中', cls: 'pill-uploading' };
+    return { show: true, text: '待上传', cls: 'pill-pending' };
+  }
+  return { show: false, text: '', cls: '' };
+}
+
+const uploadSummary = computed(() => {
+  const out = { total: 0, ready: 0, uploading: 0, pending: 0, error: 0 };
+  for (const img of props.images || []) {
+    const st = getUploadState(img);
+    if (!st.show) continue;
+    out.total += 1;
+    if (st.cls === 'pill-ready' || st.cls === 'pill-dataset') out.ready += 1;
+    else if (st.cls === 'pill-uploading') out.uploading += 1;
+    else if (st.cls === 'pill-pending') out.pending += 1;
+    else if (st.cls === 'pill-error') out.error += 1;
+  }
+  return out;
 });
 
 const displayedIndices = computed(() => {
@@ -312,6 +354,27 @@ defineExpose({
   gap: 10px;
 }
 
+.upload-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: #606266;
+}
+
+.upload-summary-item {
+  background: #f5f7fa;
+  border: 1px solid #ebeef5;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.upload-summary-item-error {
+  color: #f56c6c;
+  border-color: rgba(245, 108, 108, 0.35);
+  background: rgba(245, 108, 108, 0.08);
+}
+
 .annotation-badge {
   position: absolute;
   top: 28px;
@@ -337,5 +400,38 @@ defineExpose({
   font-size: 10px;
   padding: 1px 4px;
   border-radius: 3px;
+}
+
+.upload-badge {
+  position: absolute;
+  top: 28px;
+  left: 5px;
+  z-index: 10;
+}
+
+.upload-pill {
+  display: inline-block;
+  font-size: 10px;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(144, 147, 153, 0.95);
+}
+
+.pill-pending {
+  background: rgba(144, 147, 153, 0.95);
+}
+.pill-uploading {
+  background: rgba(230, 162, 60, 0.95);
+}
+.pill-ready {
+  background: rgba(103, 194, 58, 0.95);
+}
+.pill-error {
+  background: rgba(245, 108, 108, 0.95);
+}
+.pill-dataset {
+  background: rgba(64, 158, 255, 0.95);
 }
 </style>

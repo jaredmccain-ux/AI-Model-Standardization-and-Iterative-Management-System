@@ -537,6 +537,21 @@
                   <el-badge :value="currentAnnotations.length" type="success" show-zero>
                     <span style="color: #606266;">标注数</span>
                   </el-badge>
+                  <el-tag
+                    v-if="currentImage.remoteSource === 'staging' || currentImage.remoteSource === 'dataset' || currentImage.file"
+                    size="small"
+                    :type="currentImage.remoteSource === 'dataset' ? 'info' : (currentImage.stagingStatus === 'error' ? 'danger' : (currentImage.remoteSource === 'staging' ? 'success' : (currentImage.stagingStatus === 'uploading' ? 'warning' : '')))"
+                  >
+                    {{
+                      currentImage.remoteSource === 'dataset'
+                        ? '已入库'
+                        : (currentImage.remoteSource === 'staging'
+                            ? '已就绪'
+                            : (currentImage.stagingStatus === 'uploading'
+                                ? '上传中'
+                                : (currentImage.stagingStatus === 'error' ? '上传失败' : '待上传')))
+                    }}
+                  </el-tag>
                   <span v-if="annotationMode === 'manual' && savedAnnotations[currentImageIndex]" style="color: #67c23a;">
                     ✓ 已保存
                   </span>
