@@ -90,7 +90,7 @@ export const uploadProjectStagingImages = async (projectId, images, { overwrite 
     formData.append('images', file);
   });
   formData.append('overwrite', overwrite ? '1' : '0');
-  return api.post(`/api/projects/${projectId}/staging/images`, formData, {
+  return api.post(`/upload-api/projects/${projectId}/staging/images`, formData, {
     timeout: UPLOAD_TIMEOUT,
     headers: {
       'Content-Type': 'multipart/form-data'
