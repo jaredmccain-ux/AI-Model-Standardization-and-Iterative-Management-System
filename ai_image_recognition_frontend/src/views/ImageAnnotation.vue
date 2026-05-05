@@ -548,7 +548,7 @@
                         : (currentImage.remoteSource === 'staging'
                             ? '已就绪'
                             : (currentImage.stagingStatus === 'uploading'
-                                ? '上传中'
+                                ? ('上传中' + ((Number.isFinite(Number(currentImage.stagingProgress)) && Number(currentImage.stagingProgress) > 0) ? (' ' + Math.min(99, Math.floor(Number(currentImage.stagingProgress))) + '%') : ''))
                                 : (currentImage.stagingStatus === 'error' ? '上传失败' : '待上传')))
                     }}
                   </el-tag>
@@ -712,7 +712,7 @@ defineOptions({ name: 'ImageAnnotation' });
 import { ref, computed, watch, onMounted, onActivated, onUnmounted, nextTick } from 'vue';
 import { ElMessage, ElMessageBox, ElUpload, ElButton, ElSelect, ElOption, ElCheckboxGroup, ElCheckbox, ElInput, ElForm, ElFormItem, ElDialog, ElRadioGroup, ElRadio, ElBadge, ElAlert, ElDivider, ElTable, ElTableColumn, ElTag, ElSlider, ElInputNumber } from 'element-plus';
 import { Plus, Document, Upload } from '@element-plus/icons-vue';
-import { annotateImage, annotateProjectFile, uploadProjectStagingImages, importStagingToProjectDataset, exportAnnotationData, saveSingleAnnotation, saveBatchAnnotations, deleteAnnotation, getImageAnnotations, importAnnotationsToProjectDataset, getProjectDatasetState } from '@/api/annotation.js';
+import { annotateImage, annotateProjectFile, uploadProjectStagingImages, initProjectStagingUpload, uploadProjectStagingChunk, completeProjectStagingUpload, importStagingToProjectDataset, exportAnnotationData, saveSingleAnnotation, saveBatchAnnotations, deleteAnnotation, getImageAnnotations, importAnnotationsToProjectDataset, getProjectDatasetState } from '@/api/annotation.js';
 import { runAugmentation as runAugmentationAPI } from '@/api/augmentation.js';
 import { getUserConfig, saveUserConfig } from '@/utils/configManager.js';
 import { visioFirmAPI } from '@/api/visioFirm.js';
@@ -1009,52 +1009,161 @@ const projectDatasetLoading = ref(false);
 const remoteFileCache = ref(new Map());
 const stagingUploadQueue = ref([]);
 const stagingUploadingCount = ref(0);
-const STAGING_UPLOAD_CONCURRENCY = 4;
-const STAGING_UPLOAD_BATCH_SIZE = 3;
+const STAGING_UPLOAD_CONCURRENCY = 3;
+const STAGING_CHUNK_SIZE = 4 * 1024 * 1024;
+const STAGING_CHUNK_CONCURRENCY = 3;
+const STAGING_CHUNK_THRESHOLD = 8 * 1024 * 1024;
 
-async function uploadStagingBatch(indices) {
+function patchImage(index, patch) {
+  const old = uploadedImages.value[index];
+  if (!old) return;
+  uploadedImages.value[index] = { ...old, ...patch };
+}
+
+async function uploadStagingSingleMultipart(projectId, index) {
+  const img = uploadedImages.value[index];
+  if (!img?.file) return;
+  patchImage(index, { stagingStatus: 'uploading', stagingProgress: 0 });
+  const resp = await uploadProjectStagingImages(projectId, [img.file]);
+  const resItem = Array.isArray(resp.data?.images) ? resp.data.images[0] : null;
+  if (!resItem?.name || !resItem?.url_path) {
+    patchImage(index, { stagingStatus: 'error' });
+    return;
+  }
+  const fullUrl = `${getApiUrl()}${resItem.url_path}`;
+  if (img?.url && typeof img.url === 'string' && img.url.startsWith('blob:')) {
+    try { URL.revokeObjectURL(img.url); } catch {}
+  }
+  patchImage(index, {
+    file: null,
+    isRemote: true,
+    remoteSource: 'staging',
+    remoteName: resItem.name,
+    url: fullUrl,
+    fullUrl,
+    split: img?.split || 'train',
+    stagingStatus: 'done',
+    stagingProgress: 100,
+    stagingUploadId: '',
+  });
+  if (datasetSplits.value[String(index)] == null) {
+    datasetSplits.value = { ...datasetSplits.value, [String(index)]: (img?.split || 'train') };
+  }
+}
+
+async function uploadStagingSingleChunked(projectId, index) {
+  const img = uploadedImages.value[index];
+  const file = img?.file;
+  if (!(file instanceof File)) return;
+
+  patchImage(index, { stagingStatus: 'uploading', stagingProgress: 0 });
+
+  const initResp = await initProjectStagingUpload(projectId, {
+    filename: img.name,
+    totalSize: file.size,
+    chunkSize: STAGING_CHUNK_SIZE,
+    overwrite: false,
+    uploadId: img.stagingUploadId || null,
+  });
+
+  const uploadId = initResp.data?.upload_id;
+  const totalChunks = Number(initResp.data?.total_chunks || 0);
+  const received = new Set((initResp.data?.received || []).map((x) => Number(x)));
+  if (!uploadId || !totalChunks) {
+    patchImage(index, { stagingStatus: 'error' });
+    return;
+  }
+  patchImage(index, { stagingUploadId: uploadId });
+
+  const toUpload = [];
+  for (let i = 0; i < totalChunks; i++) {
+    if (!received.has(i)) toUpload.push(i);
+  }
+
+  let done = received.size;
+  const updateProgress = () => {
+    const pct = Math.floor((done / totalChunks) * 100);
+    patchImage(index, { stagingProgress: Math.max(0, Math.min(99, pct)) });
+  };
+  updateProgress();
+
+  const uploadChunkWithRetry = async (chunkIndex) => {
+    const start = chunkIndex * STAGING_CHUNK_SIZE;
+    const end = Math.min(file.size, start + STAGING_CHUNK_SIZE);
+    const blob = file.slice(start, end);
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await uploadProjectStagingChunk(projectId, uploadId, { index: chunkIndex, blob });
+        return;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr;
+  };
+
+  const pool = async (items, limit, worker) => {
+    const queue = items.slice();
+    const runners = Array.from({ length: Math.min(limit, queue.length) }, async () => {
+      while (queue.length > 0) {
+        const next = queue.shift();
+        await worker(next);
+        done += 1;
+        updateProgress();
+      }
+    });
+    await Promise.all(runners);
+  };
+
+  await pool(toUpload, STAGING_CHUNK_CONCURRENCY, uploadChunkWithRetry);
+
+  const completeResp = await completeProjectStagingUpload(projectId, uploadId);
+  const resItem = completeResp.data;
+  if (!resItem?.name || !resItem?.url_path) {
+    patchImage(index, { stagingStatus: 'error' });
+    return;
+  }
+  const fullUrl = `${getApiUrl()}${resItem.url_path}`;
+  if (img?.url && typeof img.url === 'string' && img.url.startsWith('blob:')) {
+    try { URL.revokeObjectURL(img.url); } catch {}
+  }
+  patchImage(index, {
+    file: null,
+    isRemote: true,
+    remoteSource: 'staging',
+    remoteName: resItem.name,
+    url: fullUrl,
+    fullUrl,
+    split: img?.split || 'train',
+    stagingStatus: 'done',
+    stagingProgress: 100,
+    stagingUploadId: '',
+  });
+  if (datasetSplits.value[String(index)] == null) {
+    datasetSplits.value = { ...datasetSplits.value, [String(index)]: (img?.split || 'train') };
+  }
+}
+
+async function uploadStagingIndex(index) {
   currentProject.value = getCurrentProject();
   if (!currentProject.value?.id) return;
   const projectId = currentProject.value.id;
-  const batch = indices
-    .map(i => ({ img: uploadedImages.value[i], index: i }))
-    .filter(({ img }) => !!img?.file && !(img?.remoteSource === 'staging' && !!img?.remoteName));
-  if (batch.length === 0) return;
 
-  batch.forEach(({ index }) => {
-    const old = uploadedImages.value[index];
-    uploadedImages.value[index] = { ...old, stagingStatus: 'uploading' };
-  });
+  const img = uploadedImages.value[index];
+  if (!img?.file) return;
+  if (img?.remoteSource === 'staging' && img?.remoteName) return;
 
-  const files = batch.map(({ img }) => img.file);
-  const resp = await uploadProjectStagingImages(projectId, files);
-  const uploaded = Array.isArray(resp.data?.images) ? resp.data.images : [];
-  for (let j = 0; j < batch.length; j++) {
-    const { index } = batch[j];
-    const resItem = uploaded[j];
-    const old = uploadedImages.value[index];
-    if (!resItem?.name || !resItem?.url_path) {
-      uploadedImages.value[index] = { ...old, stagingStatus: 'error' };
-      continue;
+  try {
+    const file = img.file;
+    const useChunked = file instanceof File && Number(file.size || 0) >= STAGING_CHUNK_THRESHOLD;
+    if (useChunked) {
+      await uploadStagingSingleChunked(projectId, index);
+    } else {
+      await uploadStagingSingleMultipart(projectId, index);
     }
-    const fullUrl = `${getApiUrl()}${resItem.url_path}`;
-    if (old?.url && typeof old.url === 'string' && old.url.startsWith('blob:')) {
-      try { URL.revokeObjectURL(old.url); } catch {}
-    }
-    uploadedImages.value[index] = {
-      ...old,
-      file: null,
-      isRemote: true,
-      remoteSource: 'staging',
-      remoteName: resItem.name,
-      url: fullUrl,
-      fullUrl,
-      split: old?.split || 'train',
-      stagingStatus: 'done',
-    };
-    if (datasetSplits.value[String(index)] == null) {
-      datasetSplits.value = { ...datasetSplits.value, [String(index)]: (old?.split || 'train') };
-    }
+  } catch (e) {
+    patchImage(index, { stagingStatus: 'error' });
   }
 }
 
@@ -1063,9 +1172,9 @@ async function pumpStagingUploads() {
   currentProject.value = getCurrentProject();
   if (!currentProject.value?.id) return;
   while (stagingUploadingCount.value < STAGING_UPLOAD_CONCURRENCY && stagingUploadQueue.value.length > 0) {
-    const indices = stagingUploadQueue.value.splice(0, STAGING_UPLOAD_BATCH_SIZE);
+    const idx = stagingUploadQueue.value.shift();
     stagingUploadingCount.value += 1;
-    uploadStagingBatch(indices)
+    uploadStagingIndex(idx)
       .catch(() => {})
       .finally(() => {
         stagingUploadingCount.value -= 1;
@@ -2318,6 +2427,8 @@ const handleFileChange = async (file) => {
     remoteName: '',
     split: 'train',
     stagingStatus: 'pending',
+    stagingProgress: 0,
+    stagingUploadId: '',
   });
   
   // 初始化该图片的标注数组

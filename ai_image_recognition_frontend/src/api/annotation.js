@@ -98,6 +98,33 @@ export const uploadProjectStagingImages = async (projectId, images, { overwrite 
   });
 };
 
+export const initProjectStagingUpload = async (projectId, { filename, totalSize, chunkSize, overwrite = false, uploadId = null }) => {
+  const formData = new FormData();
+  formData.append('filename', filename);
+  formData.append('total_size', String(totalSize));
+  formData.append('chunk_size', String(chunkSize));
+  formData.append('overwrite', overwrite ? '1' : '0');
+  if (uploadId) formData.append('upload_id', uploadId);
+  return api.post(`/api/projects/${projectId}/staging/uploads/init`, formData, {
+    timeout: LONG_TIMEOUT,
+    headers: { 'Content-Type': 'multipart/form-data' }
+  });
+};
+
+export const uploadProjectStagingChunk = async (projectId, uploadId, { index, blob }) => {
+  const formData = new FormData();
+  formData.append('index', String(index));
+  formData.append('chunk', blob, `chunk_${index}`);
+  return api.post(`/api/projects/${projectId}/staging/uploads/${uploadId}/chunk`, formData, {
+    timeout: UPLOAD_TIMEOUT,
+    headers: { 'Content-Type': 'multipart/form-data' }
+  });
+};
+
+export const completeProjectStagingUpload = async (projectId, uploadId) => {
+  return api.post(`/api/projects/${projectId}/staging/uploads/${uploadId}/complete`, null, { timeout: LONG_TIMEOUT });
+};
+
 export const annotateProjectFile = async (projectId, payload) => {
   return api.post(`/api/projects/${projectId}/auto_annotate/file`, payload, { timeout: LONG_TIMEOUT });
 };

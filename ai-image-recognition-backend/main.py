@@ -375,6 +375,16 @@ class ImportFromStagingRequest(BaseModel):
     categories: Optional[List[str]] = None
     move: bool = True
 
+def _staging_uploads_dir(paths: Dict[str, str]) -> str:
+    return os.path.join(paths["staging"], ".uploads")
+
+UPLOAD_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$", re.I)
+
+def _require_safe_upload_id(upload_id: str) -> str:
+    if not UPLOAD_ID_PATTERN.match(upload_id or ""):
+        raise HTTPException(status_code=400, detail="Invalid upload_id")
+    return upload_id
+
 def _unique_filename(dir_path: str, filename: str) -> str:
     filename = os.path.basename(filename or "")
     if not filename:
@@ -428,6 +438,224 @@ async def upload_project_staging_images(
             "url_path": f"/api/projects/{project_id}/staging/images/{filename}",
         })
     return JSONResponse(content={"success": True, "count": len(stored), "images": stored})
+
+@app.post("/api/projects/{project_id}/staging/uploads/init")
+async def init_project_staging_upload(
+    project_id: str,
+    filename: str = Form(...),
+    total_size: int = Form(...),
+    chunk_size: int = Form(...),
+    overwrite: int = Form(0),
+    upload_id: Optional[str] = Form(None),
+):
+    project_id = _require_safe_project_id(project_id)
+    paths = _ensure_project_dirs(project_id)
+    uploads_dir = _staging_uploads_dir(paths)
+    os.makedirs(uploads_dir, exist_ok=True)
+
+    filename = os.path.basename(filename or "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    try:
+        total_size = int(total_size)
+        chunk_size = int(chunk_size)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid size")
+    if total_size <= 0 or chunk_size <= 0:
+        raise HTTPException(status_code=400, detail="Invalid size")
+
+    do_overwrite = bool(int(overwrite or 0))
+    if upload_id:
+        upload_id = _require_safe_upload_id(upload_id)
+    else:
+        upload_id = uuid.uuid4().hex
+
+    upload_dir = os.path.join(uploads_dir, upload_id)
+    chunks_dir = os.path.join(upload_dir, "chunks")
+    os.makedirs(chunks_dir, exist_ok=True)
+
+    total_chunks = int((total_size + chunk_size - 1) // chunk_size)
+    meta_path = os.path.join(upload_dir, "meta.json")
+    meta = {
+        "upload_id": upload_id,
+        "filename": filename,
+        "total_size": total_size,
+        "chunk_size": chunk_size,
+        "total_chunks": total_chunks,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                prev = json.load(f) or {}
+            if (
+                prev.get("filename") == filename
+                and int(prev.get("total_size") or 0) == total_size
+                and int(prev.get("chunk_size") or 0) == chunk_size
+            ):
+                meta = prev
+                total_chunks = int(meta.get("total_chunks") or total_chunks)
+        except Exception:
+            pass
+
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+
+    if do_overwrite:
+        existing = os.path.join(paths["staging_images"], filename)
+        if os.path.exists(existing):
+            try:
+                os.remove(existing)
+            except Exception:
+                pass
+
+    received = []
+    try:
+        for fn in os.listdir(chunks_dir):
+            if not fn.endswith(".part"):
+                continue
+            try:
+                idx = int(fn.split(".")[0])
+            except Exception:
+                continue
+            received.append(idx)
+    except Exception:
+        received = []
+    received = sorted(list(set([x for x in received if 0 <= x < total_chunks])))
+
+    return JSONResponse(content={
+        "success": True,
+        "upload_id": upload_id,
+        "total_chunks": total_chunks,
+        "received": received,
+    })
+
+@app.post("/api/projects/{project_id}/staging/uploads/{upload_id}/chunk")
+async def upload_project_staging_chunk(
+    project_id: str,
+    upload_id: str,
+    index: int = Form(...),
+    chunk: UploadFile = File(...),
+):
+    project_id = _require_safe_project_id(project_id)
+    upload_id = _require_safe_upload_id(upload_id)
+    paths = _ensure_project_dirs(project_id)
+    uploads_dir = _staging_uploads_dir(paths)
+    upload_dir = os.path.join(uploads_dir, upload_id)
+    meta_path = os.path.join(upload_dir, "meta.json")
+    if not os.path.exists(meta_path):
+        raise HTTPException(status_code=404, detail="Upload not found")
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f) or {}
+    except Exception:
+        raise HTTPException(status_code=500, detail="Upload meta corrupted")
+    try:
+        idx = int(index)
+        total_chunks = int(meta.get("total_chunks") or 0)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid index")
+    if idx < 0 or (total_chunks and idx >= total_chunks):
+        raise HTTPException(status_code=400, detail="Invalid index")
+
+    chunks_dir = os.path.join(upload_dir, "chunks")
+    os.makedirs(chunks_dir, exist_ok=True)
+    out_path = os.path.join(chunks_dir, f"{idx}.part")
+
+    limiter = anyio.CapacityLimiter(8)
+
+    def _copy_to_disk() -> None:
+        with open(out_path, "wb") as f:
+            shutil.copyfileobj(chunk.file, f, length=1024 * 1024)
+
+    try:
+        await anyio.to_thread.run_sync(_copy_to_disk, limiter=limiter)
+    finally:
+        try:
+            chunk.file.close()
+        except Exception:
+            pass
+    return JSONResponse(content={"success": True, "upload_id": upload_id, "index": idx})
+
+@app.post("/api/projects/{project_id}/staging/uploads/{upload_id}/complete")
+async def complete_project_staging_upload(project_id: str, upload_id: str):
+    project_id = _require_safe_project_id(project_id)
+    upload_id = _require_safe_upload_id(upload_id)
+    paths = _ensure_project_dirs(project_id)
+    uploads_dir = _staging_uploads_dir(paths)
+    upload_dir = os.path.join(uploads_dir, upload_id)
+    meta_path = os.path.join(upload_dir, "meta.json")
+    if not os.path.exists(meta_path):
+        raise HTTPException(status_code=404, detail="Upload not found")
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f) or {}
+    except Exception:
+        raise HTTPException(status_code=500, detail="Upload meta corrupted")
+
+    filename = os.path.basename(str(meta.get("filename") or "")).strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    try:
+        total_size = int(meta.get("total_size") or 0)
+        total_chunks = int(meta.get("total_chunks") or 0)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid meta")
+    if total_size <= 0 or total_chunks <= 0:
+        raise HTTPException(status_code=400, detail="Invalid meta")
+
+    chunks_dir = os.path.join(upload_dir, "chunks")
+    if not os.path.isdir(chunks_dir):
+        raise HTTPException(status_code=400, detail="No chunks")
+
+    final_dir = paths["staging_images"]
+    os.makedirs(final_dir, exist_ok=True)
+    final_name = _unique_filename(final_dir, filename)
+    final_path = os.path.join(final_dir, final_name)
+    tmp_path = os.path.join(final_dir, f".{upload_id}.tmp")
+
+    def _assemble() -> None:
+        total_written = 0
+        with open(tmp_path, "wb") as out:
+            for i in range(total_chunks):
+                part_path = os.path.join(chunks_dir, f"{i}.part")
+                if not os.path.exists(part_path):
+                    raise RuntimeError(f"Missing chunk {i}")
+                with open(part_path, "rb") as inp:
+                    shutil.copyfileobj(inp, out, length=1024 * 1024)
+                total_written = out.tell()
+        if total_written != total_size:
+            raise RuntimeError(f"Size mismatch: {total_written} != {total_size}")
+        os.replace(tmp_path, final_path)
+
+    try:
+        await anyio.to_thread.run_sync(_assemble, limiter=anyio.CapacityLimiter(2))
+    except RuntimeError as e:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        raise
+
+    try:
+        shutil.rmtree(upload_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    return JSONResponse(content={
+        "success": True,
+        "name": final_name,
+        "url_path": f"/api/projects/{project_id}/staging/images/{final_name}",
+    })
 
 @app.get("/api/projects/{project_id}/staging/images/{filename}")
 async def get_project_staging_image(project_id: str, filename: str):

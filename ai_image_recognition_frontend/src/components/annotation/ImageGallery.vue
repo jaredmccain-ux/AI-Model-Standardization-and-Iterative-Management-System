@@ -135,12 +135,20 @@ function getUploadState(image) {
   if (remoteSource === 'dataset') return { show: true, text: '已入库', cls: 'pill-dataset' };
   if (remoteSource === 'staging') {
     if (stagingStatus === 'error') return { show: true, text: '上传失败', cls: 'pill-error' };
-    if (stagingStatus === 'uploading') return { show: true, text: '上传中', cls: 'pill-uploading' };
+    if (stagingStatus === 'uploading') {
+      const pct = Number(image?.stagingProgress);
+      const suffix = Number.isFinite(pct) && pct > 0 ? ` ${Math.min(99, Math.max(0, Math.floor(pct)))}%` : '';
+      return { show: true, text: `上传中${suffix}`, cls: 'pill-uploading' };
+    }
     return { show: true, text: '已就绪', cls: 'pill-ready' };
   }
   if (image?.file) {
     if (stagingStatus === 'error') return { show: true, text: '上传失败', cls: 'pill-error' };
-    if (stagingStatus === 'uploading') return { show: true, text: '上传中', cls: 'pill-uploading' };
+    if (stagingStatus === 'uploading') {
+      const pct = Number(image?.stagingProgress);
+      const suffix = Number.isFinite(pct) && pct > 0 ? ` ${Math.min(99, Math.max(0, Math.floor(pct)))}%` : '';
+      return { show: true, text: `上传中${suffix}`, cls: 'pill-uploading' };
+    }
     return { show: true, text: '待上传', cls: 'pill-pending' };
   }
   return { show: false, text: '', cls: '' };
