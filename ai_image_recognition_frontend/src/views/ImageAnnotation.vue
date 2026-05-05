@@ -74,7 +74,7 @@
               type="warning"
               @click="openDatasetImportDialog"
               size="large"
-              :disabled="uploadedImages.filter(img => !!img?.file).length === 0 || !currentProject"
+              :disabled="uploadedImages.filter(img => !!img?.file || (img?.remoteSource === 'staging' && !!img?.remoteName)).length === 0 || !currentProject"
             >
               <el-icon><Upload /></el-icon>
               导入到项目
@@ -2082,7 +2082,7 @@ const autoAnnotate = async () => {
           return_annotated_image: 0,
         });
       } else if (currentImageIndex.value >= 0 && currentImageFile.value) {
-        await uploadStagingBatch([currentImageIndex.value]);
+        await uploadStagingIndicesBatched(projectId, [currentImageIndex.value]);
         const updated = uploadedImages.value[currentImageIndex.value];
         if (updated?.remoteSource && updated?.remoteName) {
           response = await annotateProjectFile(projectId, {
@@ -4173,24 +4173,49 @@ const handleBatchAnnotate = async (selectedIndices) => {
       imageAnnotations.value = { ...imageAnnotations.value, [currentImageIndex.value]: [...currentAnnotations.value] };
     }
     
+    currentProject.value = getCurrentProject();
+    const projectId = currentProject.value?.id;
+    if (projectId) {
+      const needUpload = selectedIndices.filter((idx) => {
+        const img = uploadedImages.value[idx];
+        return img && !!img.file && !(img?.remoteSource && img?.remoteName);
+      });
+      if (needUpload.length > 0) {
+        await uploadStagingIndicesBatched(projectId, needUpload);
+      }
+    }
+
     // 批量处理选中的图片
     for (let i = 0; i < selectedIndices.length; i++) {
       const index = selectedIndices[i];
       const image = uploadedImages.value[index];
       
-      if (!image || !image.file) continue;
+      if (!image) continue;
       
       try {
-        // 调用API服务
-        const response = await annotateImage(
-          image.file, 
-          selectedTool.value, 
-          selectedModel.value,
-          categories.value
-        );
-        
-        if (response.data && response.data.annotations && response.data.annotations.length > 0) {
-          const annotations = response.data.annotations.map(ann => {
+        let response = null;
+        if (projectId && image?.remoteSource && image?.remoteName) {
+          response = await annotateProjectFile(projectId, {
+            source: image.remoteSource,
+            filename: image.remoteName,
+            split: image?.split || null,
+            tool: selectedTool.value,
+            model: selectedModel.value,
+            return_annotated_image: 0,
+          });
+        } else if (image.file) {
+          response = await annotateImage(
+            image.file,
+            selectedTool.value,
+            selectedModel.value,
+            categories.value
+          );
+        } else {
+          continue;
+        }
+
+        const annotations = Array.isArray(response?.data?.annotations) ? response.data.annotations : [];
+        const processedAnnotations = annotations.map(ann => {
             // 创建新对象而不是修改原对象
             const newAnn = { ...ann };
             
@@ -4251,20 +4276,17 @@ const handleBatchAnnotate = async (selectedIndices) => {
             
             return newAnn;
           });
-          
-          // 保存标注结果（用新对象替换以触发响应式更新）
-          imageAnnotations.value = { ...imageAnnotations.value, [index]: annotations };
-          totalAnnotations += annotations.length;
-          successCount++;
-          
-          // 如果是当前显示的图片，更新当前标注
-          if (index === currentImageIndex.value) {
-            currentAnnotations.value = [...annotations];
-          }
+
+        imageAnnotations.value = { ...imageAnnotations.value, [index]: processedAnnotations };
+        totalAnnotations += processedAnnotations.length;
+        successCount++;
+
+        if (index === currentImageIndex.value) {
+          currentAnnotations.value = [...processedAnnotations];
         }
       } catch (error) {
         console.error(`标注图片 ${image.name} 失败:`, error);
-        ElMessage.error(`图片 ${image.name} 标注失败: ${error.message}`);
+        ElMessage.error(`图片 ${image.name} 标注失败: ${error.response?.data?.detail || error.message}`);
       }
     }
     

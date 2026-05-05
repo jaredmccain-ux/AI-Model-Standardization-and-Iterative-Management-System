@@ -69,12 +69,36 @@ export const uploadProjectStagingImages = async (projectId, images, { overwrite 
     formData.append('images', file);
   });
   formData.append('overwrite', overwrite ? '1' : '0');
-  return api.post(`/upload-api/projects/${projectId}/staging/images`, formData, {
-    timeout: UPLOAD_TIMEOUT,
-    headers: {
-      'Content-Type': 'multipart/form-data'
+  const base = getApiUrl();
+  let preferGateway = true;
+  try {
+    const u = new URL(base, window.location.origin);
+    const host = u.hostname;
+    preferGateway = !(host === 'localhost' || host === '127.0.0.1');
+  } catch {
+    preferGateway = true;
+  }
+
+  const directPath = `/api/projects/${projectId}/staging/images`;
+  const gatewayPath = `/upload-api/projects/${projectId}/staging/images`;
+  const first = preferGateway ? gatewayPath : directPath;
+  const second = preferGateway ? directPath : gatewayPath;
+
+  const postOnce = (path) =>
+    api.post(path, formData, {
+      timeout: UPLOAD_TIMEOUT,
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+
+  try {
+    return await postOnce(first);
+  } catch (e) {
+    const status = e?.response?.status;
+    if (status === 404 || status === 405) {
+      return await postOnce(second);
     }
-  });
+    throw e;
+  }
 };
 
 export const initProjectStagingUpload = async (projectId, { filename, totalSize, chunkSize, overwrite = false, uploadId = null }) => {
