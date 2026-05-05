@@ -1012,7 +1012,7 @@ const stagingUploadingCount = ref(0);
 const STAGING_UPLOAD_CONCURRENCY = 6;
 const STAGING_CHUNK_SIZE = 8 * 1024 * 1024;
 const STAGING_CHUNK_CONCURRENCY = 4;
-const STAGING_CHUNK_THRESHOLD = 4 * 1024 * 1024;
+const STAGING_CHUNK_THRESHOLD = 16 * 1024 * 1024;
 
 function patchImage(index, patch) {
   const old = uploadedImages.value[index];
