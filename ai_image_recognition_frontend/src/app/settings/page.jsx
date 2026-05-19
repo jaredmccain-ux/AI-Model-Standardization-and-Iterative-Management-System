@@ -70,7 +70,11 @@ export default function SettingsPage() {
 
       <Card className="app-card" style={{ marginTop: 16 }}>
         <Form form={form} layout="vertical" disabled={loading}>
-          <Form.Item label="模型训练输出路径" name="training_output_path">
+          <Form.Item
+            label="模型训练输出路径"
+            name="training_output_path"
+            extra={<div style={{ fontSize: 12, color: "rgba(15,23,42,0.55)" }}>指定模型训练结果（权重、日志等）的默认保存目录。支持绝对路径或相对路径。</div>}
+          >
             <Space.Compact style={{ width: "100%" }}>
               <Input placeholder="例如: runs/train" />
               <Button icon={<FolderOpenOutlined />} onClick={selectOutputFolder} title="选择文件夹" />
@@ -78,13 +82,9 @@ export default function SettingsPage() {
                 保存
               </Button>
             </Space.Compact>
-            <div style={{ fontSize: 12, color: "rgba(15,23,42,0.55)", marginTop: 6 }}>
-              指定模型训练结果（权重、日志等）的默认保存目录。支持绝对路径或相对路径。
-            </div>
           </Form.Item>
         </Form>
       </Card>
     </div>
   );
 }
-
