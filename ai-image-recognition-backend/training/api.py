@@ -5,8 +5,8 @@ import os
 import uuid
 import asyncio
 from pathlib import Path
-import tkinter as tk
-from tkinter import filedialog
+import sys
+import threading
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -320,6 +320,9 @@ async def select_local_file(file_type: str = "yaml"):
     """
     def open_dialog():
         try:
+            import tkinter as tk
+            from tkinter import filedialog
+
             root = tk.Tk()
             root.withdraw()
             root.attributes('-topmost', True)
@@ -341,8 +344,22 @@ async def select_local_file(file_type: str = "yaml"):
             print(f"Error opening dialog: {e}")
             return ""
 
-    loop = asyncio.get_event_loop()
-    path = await loop.run_in_executor(None, open_dialog)
+    if threading.current_thread() is not threading.main_thread():
+        raise HTTPException(
+            status_code=400,
+            detail="file dialog must run on main thread (macOS limitation). Please input path or use /api/training/server-files",
+        )
+
+    if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+        raise HTTPException(
+            status_code=400,
+            detail="file dialog is not available in headless environment. Please input path or use /api/training/server-files",
+        )
+
+    path = open_dialog()
     if not path:
-        raise HTTPException(status_code=400, detail="file dialog is not available in this environment, please input path or use server-files")
+        raise HTTPException(
+            status_code=400,
+            detail="file dialog is not available in this environment, please input path or use /api/training/server-files",
+        )
     return {"path": path}
