@@ -884,7 +884,15 @@ export default function ImageAnnotationPage() {
         const img = uploadedImages[idx];
         if (!img) continue;
         if (img.file) files.push(img.file);
-        else if (img.url?.startsWith("data:")) files.push(await dataUrlToFile(img.url, img.name || `aug_${idx}.png`));
+        else if (img.url) {
+          try {
+            files.push(await dataUrlToFile(img.url, img.name || `aug_${idx}.png`));
+          } catch {}
+        }
+      }
+      if (!files.length) {
+        message.warning("未找到可增广的图片文件（请选择本地上传的图片，或确保远端图片可正常加载）");
+        return;
       }
       const resp = await runAugmentation({
         imageFiles: files,

@@ -4,7 +4,7 @@
 """
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 # 后端项目根目录（augmentation 包的上层目录）
@@ -153,7 +153,7 @@ def _read_key_from_file(path: Path) -> str:
     return ""
 
 
-def get_api_key(override: str | None = None) -> str:
+def get_api_key(override: Optional[str] = None) -> str:
     """获取 API Key：优先使用请求传入值，否则读环境变量/本地文件。"""
     key = (override or "").strip()
     if key:
@@ -169,23 +169,23 @@ def get_api_key(override: str | None = None) -> str:
     return ""
 
 
-def is_configured(override: str | None = None) -> bool:
+def is_configured(override: Optional[str] = None) -> bool:
     """是否已配置 API Key。"""
     return bool(get_api_key(override=override))
 
 
-def _normalize_url(url: str | None) -> str:
+def _normalize_url(url: Optional[str]) -> str:
     return (url or "").strip().rstrip("/")
 
 
-def _join_url(base_url: str | None, suffix: str) -> str:
+def _join_url(base_url: Optional[str], suffix: str) -> str:
     base = _normalize_url(base_url)
     if not base:
         return ""
     return f"{base}{suffix}"
 
 
-def _hostname_of(url: str | None) -> str:
+def _hostname_of(url: Optional[str]) -> str:
     raw = _normalize_url(url)
     if not raw:
         return ""
@@ -195,7 +195,7 @@ def _hostname_of(url: str | None) -> str:
         return ""
 
 
-def _path_of(url: str | None) -> str:
+def _path_of(url: Optional[str]) -> str:
     raw = _normalize_url(url)
     if not raw:
         return ""
@@ -205,20 +205,20 @@ def _path_of(url: str | None) -> str:
         return ""
 
 
-def _is_dashscope_host(url: str | None) -> bool:
+def _is_dashscope_host(url: Optional[str]) -> bool:
     return _hostname_of(url).endswith("dashscope.aliyuncs.com")
 
 
-def _is_dashscope_base_like_url(url: str | None) -> bool:
+def _is_dashscope_base_like_url(url: Optional[str]) -> bool:
     if not _is_dashscope_host(url):
         return False
     return _path_of(url) in ("/", "/api/v1", "/compatible-mode/v1")
 
 
 def _normalize_dashscope_multimodal_image_url(
-    image_url: str | None,
+    image_url: Optional[str],
     *,
-    base_url: str | None = None,
+    base_url: Optional[str] = None,
 ) -> tuple[str, list[str]]:
     resolved_image_url = _normalize_url(image_url)
     notes: list[str] = []
@@ -234,7 +234,7 @@ def _normalize_dashscope_multimodal_image_url(
     return resolved_image_url, notes
 
 
-def _normalize_dashscope_text_base_url(base_url: str | None) -> tuple[str, list[str]]:
+def _normalize_dashscope_text_base_url(base_url: Optional[str]) -> tuple[str, list[str]]:
     resolved_base_url = _normalize_url(base_url)
     notes: list[str] = []
     if _is_dashscope_host(resolved_base_url) and _path_of(resolved_base_url) in ("/", "/api/v1"):
@@ -243,7 +243,7 @@ def _normalize_dashscope_text_base_url(base_url: str | None) -> tuple[str, list[
     return resolved_base_url, notes
 
 
-def normalize_api_style(api_style: str | None = None) -> str:
+def normalize_api_style(api_style: Optional[str] = None) -> str:
     raw = (api_style or DEFAULT_API_STYLE).strip().lower()
     if raw in API_STYLE_OPTIONS:
         return raw
@@ -256,12 +256,12 @@ def normalize_api_style(api_style: str | None = None) -> str:
 
 def resolve_provider_config(
     *,
-    provider_preset: str | None = None,
-    api_style: str | None = None,
-    base_url: str | None = None,
-    image_url: str | None = None,
-    text_model: str | None = None,
-    image_model: str | None = None,
+    provider_preset: Optional[str] = None,
+    api_style: Optional[str] = None,
+    base_url: Optional[str] = None,
+    image_url: Optional[str] = None,
+    text_model: Optional[str] = None,
+    image_model: Optional[str] = None,
 ) -> dict[str, Any]:
     preset_key = (provider_preset or DEFAULT_PROVIDER_PRESET).strip() or DEFAULT_PROVIDER_PRESET
     preset = PROVIDER_PRESETS.get(preset_key, PROVIDER_PRESETS["custom"])
@@ -300,11 +300,11 @@ def resolve_provider_config(
 
 
 def validate_image_model(
-    model_name: str | None = None,
+    model_name: Optional[str] = None,
     *,
-    api_style: str | None = None,
-    base_url: str | None = None,
-    image_url: str | None = None,
+    api_style: Optional[str] = None,
+    base_url: Optional[str] = None,
+    image_url: Optional[str] = None,
 ) -> dict[str, Any]:
     """
     检查模型名是否看起来具备生图/改图能力。
@@ -380,7 +380,7 @@ def validate_image_model(
     }
 
 
-def get_image_model_output_limit(model_name: str | None = None) -> int:
+def get_image_model_output_limit(model_name: Optional[str] = None) -> int:
     """部分模型仅支持单张输出。"""
     name = (model_name or QWEN_IMAGE_EDIT_MODEL or "").strip().lower()
     if name == "qwen-image-edit":
@@ -389,13 +389,13 @@ def get_image_model_output_limit(model_name: str | None = None) -> int:
 
 
 def get_diagnostic(
-    image_model: str | None = None,
+    image_model: Optional[str] = None,
     *,
-    provider_preset: str | None = None,
-    api_style: str | None = None,
-    base_url: str | None = None,
-    image_url: str | None = None,
-    text_model: str | None = None,
+    provider_preset: Optional[str] = None,
+    api_style: Optional[str] = None,
+    base_url: Optional[str] = None,
+    image_url: Optional[str] = None,
+    text_model: Optional[str] = None,
 ) -> dict:
     """返回 Key 配置诊断信息（不包含 Key 内容），便于排查未调用模型的问题。"""
     resolved = resolve_provider_config(
