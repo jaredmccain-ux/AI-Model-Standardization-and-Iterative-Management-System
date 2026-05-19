@@ -68,10 +68,30 @@ export default function AppShell({ children }) {
           borderRight: "1px solid rgba(15, 23, 42, 0.06)",
         }}
       >
-        <div style={{ padding: collapsed ? "18px 12px" : "18px 16px" }}>
-          <Typography.Title level={5} style={{ margin: 0, lineHeight: 1.2 }}>
-            {collapsed ? "VMIH" : "Vision model iterate hub"}
-          </Typography.Title>
+        <div
+          style={{
+            padding: collapsed ? "18px 12px" : "18px 16px",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+          }}
+        >
+          <img
+            src="/logo.svg"
+            alt="Vision model iterate hub"
+            width={collapsed ? 28 : 32}
+            height={collapsed ? 28 : 32}
+            style={{
+              display: "block",
+              borderRadius: 10,
+              boxShadow: "0 10px 20px rgba(15,23,42,0.10)",
+            }}
+          />
+          {collapsed ? null : (
+            <Typography.Title level={5} style={{ margin: 0, lineHeight: 1.2 }}>
+              Vision model iterate hub
+            </Typography.Title>
+          )}
         </div>
         <Menu
           mode="inline"
