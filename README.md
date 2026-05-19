@@ -4,8 +4,7 @@
 
 ## 目录
 
-- 前端（推荐）：`ai_image_recognition_frontend_next/`（React + Next.js + Ant Design）
-- 前端（原版）：`ai_image_recognition_frontend/`（Vue 3 + Vite + Element Plus）
+- 前端：`ai_image_recognition_frontend/`（React + Next.js + Ant Design）
 - 后端：`ai-image-recognition-backend/`（FastAPI + Ultralytics YOLO）
 
 ## 运行方式（本地开发）
@@ -22,14 +21,6 @@ API 文档：
 - http://localhost:8000/docs
 
 ### 2) 启动前端（Next.js，推荐）
-
-```bash
-cd AI-Model-Standardization-and-Iterative-Management-System/ai_image_recognition_frontend_next
-npm install
-npm run dev
-```
-
-### 3) 启动前端（Vite，原版）
 
 ```bash
 cd AI-Model-Standardization-and-Iterative-Management-System/ai_image_recognition_frontend
@@ -67,7 +58,7 @@ projects/<project_id>/
 └── evaluation/eval_<evaluation_id>/...
 ```
 
-## Next 前端说明（ai_image_recognition_frontend_next）
+## 前端说明（ai_image_recognition_frontend）
 
 - 系统名已更新为：Vision model iterate hub
 - 图像标注页“导入到项目”后，会自动拉取项目数据集并回显（基于后端 `/api/projects/{project_id}/dataset/state`）。

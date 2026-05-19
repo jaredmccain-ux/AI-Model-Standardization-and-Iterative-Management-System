@@ -1,4 +1,4 @@
-# AI 图像识别标准化迭代系统 - 后端服务
+# Vision model iterate hub - 后端服务
 
 基于 FastAPI 和 YOLOv8 构建的高性能 AI 后端服务，支持目标检测、图像分割和分类任务的训练、推理与评估。
 

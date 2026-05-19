@@ -1,6 +1,6 @@
 "use client";
 
-import { Alert, Button, Card, Descriptions, Empty, Input, Slider, Space, Table, Tabs, Tag, Typography, message } from "antd";
+import { Alert, Button, Card, Descriptions, Empty, Input, Slider, Table, Tabs, Tag, Typography, message } from "antd";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { evaluationAPI } from "@/api/evaluation";
 import { getCurrentProject } from "@/lib/projectManager";
@@ -13,7 +13,7 @@ function fmtNum(v) {
 
 export default function EvaluationOptimizationPage() {
   const [activeTab, setActiveTab] = useState("run");
-  const [currentProject, setCurrentProject] = useState(getCurrentProject());
+  const [currentProject, setCurrentProject] = useState(null);
 
   const [iouThreshold, setIouThreshold] = useState(0.5);
   const [evaluationData, setEvaluationData] = useState(null);
@@ -269,7 +269,7 @@ export default function EvaluationOptimizationPage() {
                             style={{ marginTop: 10 }}
                             type="warning"
                             showIcon
-                            message="ground_truths 为 0"
+                            title="ground_truths 为 0"
                             description="这会导致评估结果全部为 0。通常原因是：验证集划分到了未标注图片，或 labels/val 下的 txt 为空。请回到“图像标注 → 导入到项目”，确保验证集图片有标注。"
                           />
                         ) : null}

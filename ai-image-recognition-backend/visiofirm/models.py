@@ -3,7 +3,7 @@ from datetime import datetime
 from database import Base
 
 class VisioFirmAnnotation(Base):
-    """AI模型标准化迭代系统标注工具的标注结果模型"""
+    """Vision model iterate hub 标注工具的标注结果模型"""
     __tablename__ = "visiofirm_annotations"
     
     id = Column(Integer, primary_key=True, index=True)

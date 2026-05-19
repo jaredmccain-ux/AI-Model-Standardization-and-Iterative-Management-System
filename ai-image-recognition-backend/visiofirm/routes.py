@@ -32,7 +32,7 @@ async def annotate_image(
     db: Session = Depends(get_db)
 ):
     """
-    使用AI模型标准化迭代系统进行图像自动标注
+    使用 Vision model iterate hub 进行图像自动标注
     
     - **file**: 要标注的图像文件
     - **tool_type**: 标注工具类型 (bbox, polygon, obb)
