@@ -59,6 +59,7 @@ export default function AppShell({ children }) {
         collapsed={collapsed}
         trigger={null}
         width={220}
+        collapsedWidth={72}
         style={{
           position: "sticky",
           top: 0,
@@ -70,9 +71,10 @@ export default function AppShell({ children }) {
       >
         <div
           style={{
-            padding: collapsed ? "18px 12px" : "18px 16px",
+            padding: collapsed ? "18px 0" : "18px 16px",
             display: "flex",
             alignItems: "center",
+            justifyContent: collapsed ? "center" : "flex-start",
             gap: 10,
           }}
         >
@@ -95,6 +97,8 @@ export default function AppShell({ children }) {
         </div>
         <Menu
           mode="inline"
+          inlineCollapsed={collapsed}
+          inlineIndent={18}
           selectedKeys={[selectedKey]}
           items={menuItems}
           style={{ background: "transparent", borderInlineEnd: "none" }}
